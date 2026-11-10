@@ -1,0 +1,22 @@
+src/*.o
+libdsm.a
+apps/hello_dsm
+
+# Compilados y librerías C
+*.o
+*.a
+*.so
+
+# Logs y volcados
+*.log
+core
+
+# Archivos de entorno si llegaras a usarlos a futuro
+.env
+*.env.local
+
+# Editores y sistema operativo
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
