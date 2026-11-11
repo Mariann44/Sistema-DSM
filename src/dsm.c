@@ -66,8 +66,7 @@ int dsm_num_nodes(void) {
 }
 size_t dsm_page_size(void) { return G.cfg.page_size; }
 
-int dsm_lock(dsm_lock_t *l) { (void)l; return DSM_E_NOT_IMPL; }       
-int dsm_unlock(dsm_lock_t *l) { (void)l; return DSM_E_NOT_IMPL; }
+/* dsm_lock / dsm_unlock: ver sync.c */
 int dsm_barrier(dsm_barrier_t *b, uint32_t c) { (void)b; (void)c; return DSM_E_NOT_IMPL; }
 
 int dsm_get_stats(dsm_scope_t scope, dsm_stats_t *o) {

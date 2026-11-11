@@ -1,8 +1,8 @@
 CC ?= gcc
 CFLAGS ?= -O2 -g -Wall -Wextra -pthread -Iinclude -Isrc
-SRC := src/config.c src/net.c src/membership.c src/heartbeat.c src/pager.c src/dsm.c
+SRC := src/config.c src/net.c src/membership.c src/heartbeat.c src/sync.c src/pager.c src/dsm.c
 OBJ := $(SRC:.c=.o)
-APPS := apps/hello_dsm apps/idle_dsm
+APPS := apps/hello_dsm apps/idle_dsm apps/counter
 
 all: libdsm.a $(APPS)
 libdsm.a: $(OBJ)
@@ -15,6 +15,8 @@ test: all
 	./tests/run_local.sh 3
 test-hb: all
 	./tests/run_heartbeat.sh
+test-lock: all
+	./tests/run_counter.sh 3 300
 clean:
 	rm -f src/*.o libdsm.a $(APPS)
-.PHONY: all test test-hb clean
+.PHONY: all test test-hb test-lock clean

@@ -164,6 +164,9 @@ static void dispatch(int fd, msg_header_t *h, uint8_t *pl) {
     case MSG_PAGE_FETCH: pager_on_fetch(h); break;
     case MSG_INVALIDATE: pager_on_invalidate(h); break;
     case MSG_PAGE_FETCH_REPLY: case MSG_INVALIDATE_ACK: waiter_complete(h, pl, len); break;
+    case MSG_LOCK_ACQUIRE: sync_on_acquire(h, pl, len); break;   /* hoja: solo encola o concede */
+    case MSG_LOCK_RELEASE: sync_on_release(h, pl, len); break;
+    case MSG_LOCK_GRANT: waiter_complete(h, pl, len); break;
     case MSG_ERROR: LOG(LOG_WARN, "ERROR de n%u: %.*s", h->src_node, (int)len, pl); break;
     default: LOG(LOG_WARN, "mensaje 0x%02x no soportado aún", h->type); break;
     }
