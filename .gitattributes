@@ -1,0 +1,11 @@
+# Todo el texto se guarda y se descarga con fin de línea LF, también en Windows.
+# Sin esto, Git en Windows convierte a CRLF y en Linux fallan los scripts
+# ("No such file or directory" por el \r) y el Makefile.
+* text=auto eol=lf
+
+# Binarios: nunca convertir.
+*.png  binary
+*.jpg  binary
+*.pdf  binary
+*.docx binary
+*.mp4  binary
