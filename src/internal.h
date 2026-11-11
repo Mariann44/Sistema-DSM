@@ -55,7 +55,8 @@ typedef struct {
     uint16_t data_port, hb_port, ctl_port, http_port;
     uint32_t first_page, num_pages, free_pages;
     int data_fd;
-    uint64_t last_hb_ms;
+    int hb_fd;            /* conexión de salida hacia su HB_PORT (solo latidos); -1 si no hay */
+    uint64_t last_hb_ms;  /* último latido recibido de este nodo (CLOCK_MONOTONIC) */
     pthread_mutex_t send_lock;
 } node_entry_t;
 
@@ -74,14 +75,14 @@ typedef struct {
 typedef struct {
     dsm_config_t cfg;
     int inited; volatile int running;
-    uint16_t me; int slot, is_founder, listen_fd;
+    uint16_t me; int slot, is_founder, listen_fd, hb_listen_fd;
     uint32_t my_ip;
     int memfd; uint8_t *app, *sys; size_t span; uint32_t max_pages;
     local_page_t *pages; dir_entry_t *dir;
     sem_t page_locks[N_LOCKS], dir_locks[N_LOCKS];
     node_entry_t nodes[MAX_NODES_HARD]; int n_nodes; pthread_mutex_t nodes_mx;
     waiter_t waiters[MAX_WAITERS]; pthread_mutex_t waiters_mx; _Atomic uint32_t next_rid;
-    pthread_t listener_th, svc_th[32];
+    pthread_t listener_th, svc_th[32], hb_th; volatile int hb_running;
     uint32_t slice_first, slice_num, alloc_next;
     pthread_mutex_t alloc_mx;
     stats_t st;
@@ -118,6 +119,9 @@ void membership_on_node_joined(const uint8_t *pl, uint32_t len);
 void membership_on_leave(int src); void membership_on_conn_closed(int fd);
 void membership_serve_join(int fd, const msg_header_t *h, const uint8_t *pl);
 void membership_broadcast(int type);
+const char *node_state_name(int st);
+/* heartbeat.c */
+int heartbeat_start(void); void heartbeat_stop(void);
 /* pager.c */
 int pager_init(void); void pager_shutdown(void);
 void pager_init_slice(uint32_t first, uint32_t num);

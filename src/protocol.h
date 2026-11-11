@@ -42,4 +42,5 @@ static inline uint64_t get64(const uint8_t *b) { uint64_t v; memcpy(&v, b, 8); r
 
 #define JOIN_REQ_LEN   28
 #define NODE_WIRE_LEN  28
+#define HEARTBEAT_LEN  16  /* state u8, reserved u8[3], free_pages u32, timestamp_ms u64 */
 #endif

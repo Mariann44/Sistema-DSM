@@ -155,7 +155,7 @@ static void dispatch(int fd, msg_header_t *h, uint8_t *pl) {
             pthread_mutex_lock(&G.nodes_mx); G.nodes[h->src_node].data_fd = fd; pthread_mutex_unlock(&G.nodes_mx);
         }
         break;
-    case MSG_HEARTBEAT: break; /* TODO Entregable 2: heartbeat y detección de fallas */
+    case MSG_HEARTBEAT: break; /* los latidos llegan por HB_PORT (heartbeat.c), no por esta conexión */
     case MSG_JOIN_REQUEST: case MSG_PAGE_REQUEST: enqueue(h, pl, fd); own = 0; break;
     case MSG_JOIN_ACK: membership_on_join_ack(fd, h, pl, len); waiter_complete(h, pl, len); break;
     case MSG_NODE_JOINED: membership_on_node_joined(pl, len); break;

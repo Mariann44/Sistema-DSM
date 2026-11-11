@@ -10,7 +10,10 @@ int dsm_init(const char *config_path) {
     int rc = config_load(config_path, &G.cfg);
     if (rc) return rc;
     pthread_mutex_init(&G.nodes_mx, NULL); pthread_mutex_init(&G.waiters_mx, NULL); pthread_mutex_init(&G.alloc_mx, NULL);
-    for (int i = 0; i < MAX_NODES_HARD; i++) { G.nodes[i].data_fd = -1; pthread_mutex_init(&G.nodes[i].send_lock, NULL); }
+    for (int i = 0; i < MAX_NODES_HARD; i++) {
+        G.nodes[i].data_fd = -1; G.nodes[i].hb_fd = -1; pthread_mutex_init(&G.nodes[i].send_lock, NULL);
+    }
+    G.listen_fd = G.hb_listen_fd = -1;
     for (int i = 0; i < MAX_WAITERS; i++) sem_init(&G.waiters[i].sem, 0, 0);
     signal(SIGPIPE, SIG_IGN);
     G.max_pages = ((size_t)G.cfg.max_global_mb << 20) / G.cfg.page_size;
@@ -18,6 +21,7 @@ int dsm_init(const char *config_path) {
     if ((rc = membership_start())) return rc;
     if ((rc = net_start())) return rc;
     if ((rc = membership_join())) { net_stop(); return rc; }
+    if ((rc = heartbeat_start())) { net_stop(); return rc; }
     G.inited = 1;
     return DSM_OK;
 }
@@ -27,7 +31,7 @@ int dsm_finalize(void) {
     /* TODO: PAGE_WRITEBACK de las páginas remotas en M antes de salir. */
     membership_broadcast(MSG_NODE_LEAVE);
     usleep(100000);
-    net_stop(); pager_shutdown();
+    heartbeat_stop(); net_stop(); pager_shutdown();
     G.inited = 0;
     return DSM_OK;
 }

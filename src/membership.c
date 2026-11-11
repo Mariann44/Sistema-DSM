@@ -43,6 +43,16 @@ int home_of(uint32_t page) {
     return r;
 }
 
+static int listen_on(uint16_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0), one = 1;
+    if (fd < 0) return -1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    struct sockaddr_in sa = { .sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_ANY) };
+    if (bind(fd, (struct sockaddr *)&sa, sizeof sa) == 0 && listen(fd, 64) == 0) return fd;
+    close(fd);
+    return -1;
+}
+
 /* Reconoce la máquina propia, escoge el slot (primer DATA_PORT libre) y abre el puerto de escucha. */
 int membership_start(void) {
     sem_init(&join_sem, 0, 1);
@@ -53,16 +63,14 @@ int membership_start(void) {
     if (my_host_idx < 0) { LOG(LOG_ERROR, "esta máquina no aparece en ninguna entrada NODE"); return DSM_E_CONFIG; }
     for (int s = 0; s < G.cfg.slots_per_host; s++) {
         uint16_t port = G.cfg.port_base + 4 * s;
-        int fd = socket(AF_INET, SOCK_STREAM, 0), one = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-        struct sockaddr_in sa = { .sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_ANY) };
-        if (bind(fd, (struct sockaddr *)&sa, sizeof sa) == 0 && listen(fd, 64) == 0) {
-            G.listen_fd = fd; G.slot = s; G.is_founder = (my_host_idx == 0 && s == 0);
+        int fd = listen_on(port), hfd = fd >= 0 ? listen_on(port + 1) : -1;  /* DATA_PORT y HB_PORT del slot */
+        if (fd >= 0 && hfd >= 0) {
+            G.listen_fd = fd; G.hb_listen_fd = hfd; G.slot = s; G.is_founder = (my_host_idx == 0 && s == 0);
             return DSM_OK;
         }
-        close(fd);
+        if (fd >= 0) close(fd);
     }
-    LOG(LOG_ERROR, "no hay slot libre (todos los DATA_PORT ocupados)");
+    LOG(LOG_ERROR, "no hay slot libre (todos los DATA_PORT/HB_PORT ocupados)");
     return DSM_E_NET;
 }
 
@@ -78,13 +86,14 @@ static void wire_node(uint8_t *b, const node_entry_t *n) {
     put16(b + 8, n->data_port); put16(b + 10, n->hb_port); put16(b + 12, n->ctl_port); put16(b + 14, n->http_port);
     put32(b + 16, n->first_page); put32(b + 20, n->num_pages); put32(b + 24, n->free_pages);
 }
-static void unwire_node(const uint8_t *b) { /* conserva data_fd y send_lock */
+static void unwire_node(const uint8_t *b) { /* conserva data_fd, hb_fd y send_lock */
     uint16_t id = get16(b);
     if (id >= MAX_NODES_HARD) return;
     node_entry_t *n = &G.nodes[id];
     n->node_id = id; n->state = b[2]; n->ipv4 = get32(b + 4);
     n->data_port = get16(b + 8); n->hb_port = get16(b + 10); n->ctl_port = get16(b + 12); n->http_port = get16(b + 14);
     n->first_page = get32(b + 16); n->num_pages = get32(b + 20); n->free_pages = get32(b + 24);
+    n->last_hb_ms = now_ms();                      /* plazo de gracia antes de exigir latidos */
     if (id >= G.n_nodes) G.n_nodes = id + 1;
 }
 
@@ -108,6 +117,7 @@ void membership_serve_join(int fd, const msg_header_t *h, const uint8_t *pl) {
             n->node_id = id; n->state = N_ALIVE; n->ipv4 = get32(pl + 8);
             n->data_port = get16(pl + 12); n->hb_port = get16(pl + 14); n->ctl_port = get16(pl + 16); n->http_port = get16(pl + 18);
             n->first_page = next; n->num_pages = mem_pages; n->free_pages = mem_pages; n->data_fd = fd;
+            n->last_hb_ms = now_ms();
             G.n_nodes++;
         }
         pthread_mutex_unlock(&G.nodes_mx);
