@@ -6,7 +6,7 @@ con `config_hash`, hilo de red con `poll` + hilos de servicio.
 
 ## Uso
     make                      # libdsm.a + apps/hello_dsm
-    make test                 # 3 nodos locales, uniones secuenciales (hello_dsm admite hasta 4 nodos)
+    make test                 # 3 nodos locales: coherencia, fases separadas con dsm_barrier
     make test-hb              # heartbeat: pausa un nodo y verifica SUSPECT, recuperación y DOWN (~35 s)
     make test-lock            # 3 nodos x 300 incrementos de un contador compartido con dsm_lock
     ./apps/hello_dsm conf/dsm_local.conf 3     # una terminal por nodo (el primero es el fundador)
@@ -22,7 +22,7 @@ con `config_hash`, hilo de red con `poll` + hilos de servicio.
 | `src/net.c` | listener (`poll`+eventfd), cola y pool de servicio, envío, waiters |
 | `src/membership.c` | slot/puertos, JOIN_REQUEST/ACK, NODE_JOINED, `home_of()` |
 | `src/heartbeat.c` | latidos por `HB_PORT`, estados ALIVE/SUSPECT/DOWN |
-| `src/sync.c` | locks distribuidos: LOCK_ACQUIRE/GRANT/RELEASE, cola en el administrador |
+| `src/sync.c` | locks (LOCK_ACQUIRE/GRANT/RELEASE) y barreras (BARRIER_ENTER/RELEASE) |
 | `src/pager.c` | memfd + 2 vistas, handler SIGSEGV, MSI, directorio, PAGE_*/INVALIDATE |
 | `src/dsm.c` | `dsm_init/finalize/alloc/prefetch/get_stats` |
 
@@ -39,12 +39,15 @@ con `config_hash`, hilo de red con `poll` + hilos de servicio.
   es el home de la página donde está el lock; guarda el dueño y una cola FIFO (hasta 64 en espera)
   y nunca espera a otro nodo. Si el dueño cae, el lock pasa al siguiente y `dsm_lock` le retorna
   `DSM_E_NODE_DOWN` (tiene el lock, pero los datos pueden haber quedado a medias).
+- Barreras: `dsm_barrier(b, count)` con el mismo esquema de administrador. La primera llegada fija
+  `count` (con 0, el número de nodos vivos en ese momento); una llegada con otro `count` recibe
+  `DSM_E_MISMATCH`. Se pueden reutilizar (cada liberación sube la generación). Si un nodo cae con
+  llegadas pendientes, todos salen con `DSM_E_NODE_DOWN`. Las pruebas usan barreras en vez de banderas.
 
 ## Pendiente (siguiente trabajo)
-1. `dsm_barrier` (hoy devuelve `DSM_E_NOT_IMPL`; las pruebas usan banderas en la raíz).
-2. `dsm_alloc` distribuido (ALLOC_REQUEST/REPLY/COMMIT/ABORT) y `dsm_free`.
-3. PAGE_WRITEBACK en `dsm_finalize` y reemplazo por `CACHE_MAX_PAGES` (las páginas M remotas se pierden al salir).
-4. `dsmctl` / puerto de control, estadísticas globales, HTTP.
-5. Uniones concurrentes en contactos distintos pueden asignar el mismo rango (hoy: arrancar nodos de a uno).
-6. El listener lee mensajes con `recv` bloqueante; un par lento podría retrasarlo (pasar a buffers por conexión).
-7. Decodificación de lectura/escritura del fallo solo en x86-64; en otras arquitecturas lee y luego escala.
+1. `dsm_alloc` distribuido (ALLOC_REQUEST/REPLY/COMMIT/ABORT) y `dsm_free`.
+2. PAGE_WRITEBACK en `dsm_finalize` y reemplazo por `CACHE_MAX_PAGES` (las páginas M remotas se pierden al salir).
+3. `dsmctl` / puerto de control, estadísticas globales, HTTP.
+4. Uniones concurrentes en contactos distintos pueden asignar el mismo rango (hoy: arrancar nodos de a uno).
+5. El listener lee mensajes con `recv` bloqueante; un par lento podría retrasarlo (pasar a buffers por conexión).
+6. Decodificación de lectura/escritura del fallo solo en x86-64; en otras arquitecturas lee y luego escala.
