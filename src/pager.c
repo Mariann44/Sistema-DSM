@@ -11,8 +11,6 @@
 #define NONE_OWNER 0xFFFF
 
 static inline int prot_of(int st) { return st == PG_M ? (PROT_READ | PROT_WRITE) : st == PG_S ? PROT_READ : PROT_NONE; }
-static inline sem_t *plock(uint32_t p) { return &G.page_locks[p % N_LOCKS]; }
-static inline sem_t *dlock(uint32_t p) { return &G.dir_locks[p % N_LOCKS]; }
 
 /* Diagnóstico sin malloc/printf: el manejador no puede devolver un error a la aplicación. */
 static void fatal_fault(uint32_t p, int home, const char *cause) {

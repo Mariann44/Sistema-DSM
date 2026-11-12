@@ -167,6 +167,8 @@ static void dispatch(int fd, msg_header_t *h, uint8_t *pl) {
     case MSG_LOCK_ACQUIRE: sync_on_acquire(h, pl, len); break;   /* hoja: solo encola o concede */
     case MSG_LOCK_RELEASE: sync_on_release(h, pl, len); break;
     case MSG_LOCK_GRANT: waiter_complete(h, pl, len); break;
+    case MSG_STATS_REQUEST: stats_on_request(h); break;            /* hoja: responde con dsm_stats_t local */
+    case MSG_STATS_REPLY: waiter_complete(h, pl, len); break;      /* hoja: despierta el waiter con reply_buf */
     case MSG_ERROR: LOG(LOG_WARN, "ERROR de n%u: %.*s", h->src_node, (int)len, pl); break;
     default: LOG(LOG_WARN, "mensaje 0x%02x no soportado aún", h->type); break;
     }

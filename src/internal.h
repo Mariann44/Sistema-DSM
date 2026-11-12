@@ -22,7 +22,7 @@
 enum { LOG_ERROR = 0, LOG_WARN, LOG_INFO, LOG_DEBUG };
 enum { N_UNUSED = 0, N_JOINING, N_ALIVE, N_SUSPECT, N_DOWN, N_LEFT };
 enum { PG_I = 0, PG_S, PG_M, PG_PR, PG_PW };
-enum { W_PAGE = 1, W_INVAL, W_FETCH, W_JOIN, W_LOCK };
+enum { W_PAGE = 1, W_INVAL, W_FETCH, W_JOIN, W_LOCK, W_STATS };
 #define DF_ALLOCATED 0x02
 
 typedef struct {
@@ -82,7 +82,8 @@ typedef struct {
     sem_t page_locks[N_LOCKS], dir_locks[N_LOCKS];
     node_entry_t nodes[MAX_NODES_HARD]; int n_nodes; pthread_mutex_t nodes_mx;
     waiter_t waiters[MAX_WAITERS]; pthread_mutex_t waiters_mx; _Atomic uint32_t next_rid;
-    pthread_t listener_th, svc_th[32], hb_th; volatile int hb_running;
+    pthread_t listener_th, svc_th[32], hb_th, ctl_th; volatile int hb_running, ctl_running;
+    int ctl_listen_fd;
     uint32_t slice_first, slice_num, alloc_next;
     pthread_mutex_t alloc_mx;
     stats_t st;
@@ -94,6 +95,8 @@ extern dsm_ctx_t G;
 
 static inline uint8_t *app_addr(uint32_t p) { return G.app + (size_t)p * G.cfg.page_size; }
 static inline uint8_t *sys_addr(uint32_t p) { return G.sys + (size_t)p * G.cfg.page_size; }
+static inline sem_t *plock(uint32_t p) { return &G.page_locks[p % N_LOCKS]; }
+static inline sem_t *dlock(uint32_t p) { return &G.dir_locks[p % N_LOCKS]; }
 uint64_t now_ms(void);
 
 /* config.c */
@@ -111,6 +114,8 @@ void waiter_put(waiter_t *w);
 void waiter_complete(const msg_header_t *h, const uint8_t *pl, uint32_t len);
 void waiter_fail_node(int node);
 int waiter_wait(waiter_t *w, uint32_t ms);
+void stats_on_request(const msg_header_t *h);
+void fill_local_stats(dsm_stats_t *o);
 /* membership.c */
 int membership_start(void); int membership_join(void);
 int home_of(uint32_t page);
@@ -126,6 +131,8 @@ void sync_on_release(const msg_header_t *h, const uint8_t *pl, uint32_t len);
 void sync_node_down(int node);
 /* heartbeat.c */
 int heartbeat_start(void); void heartbeat_stop(void);
+/* ctl.c */
+int ctl_start(void); void ctl_stop(void);
 /* pager.c */
 int pager_init(void); void pager_shutdown(void);
 void pager_init_slice(uint32_t first, uint32_t num);

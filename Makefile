@@ -1,6 +1,6 @@
 CC ?= gcc
 CFLAGS ?= -O2 -g -Wall -Wextra -pthread -Iinclude -Isrc
-SRC := src/config.c src/net.c src/membership.c src/heartbeat.c src/sync.c src/pager.c src/dsm.c
+SRC := src/config.c src/net.c src/membership.c src/heartbeat.c src/sync.c src/pager.c src/ctl.c src/dsm.c
 OBJ := $(SRC:.c=.o)
 APPS := apps/hello_dsm apps/idle_dsm apps/counter
 

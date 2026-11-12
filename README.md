@@ -44,7 +44,7 @@ con `config_hash`, hilo de red con `poll` + hilos de servicio.
 1. `dsm_barrier` (hoy devuelve `DSM_E_NOT_IMPL`; las pruebas usan banderas en la raíz).
 2. `dsm_alloc` distribuido (ALLOC_REQUEST/REPLY/COMMIT/ABORT) y `dsm_free`.
 3. PAGE_WRITEBACK en `dsm_finalize` y reemplazo por `CACHE_MAX_PAGES` (las páginas M remotas se pierden al salir).
-4. `dsmctl` / puerto de control, estadísticas globales, HTTP.
+4. `dsmctl` / puerto de control, HTTP (estadísticas globales ya soportadas con `dsm_get_stats(DSM_GLOBAL, ...)`).
 5. Uniones concurrentes en contactos distintos pueden asignar el mismo rango (hoy: arrancar nodos de a uno).
 6. El listener lee mensajes con `recv` bloqueante; un par lento podría retrasarlo (pasar a buffers por conexión).
 7. Decodificación de lectura/escritura del fallo solo en x86-64; en otras arquitecturas lee y luego escala.
