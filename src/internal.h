@@ -24,6 +24,7 @@ enum { LOG_ERROR = 0, LOG_WARN, LOG_INFO, LOG_DEBUG };
 enum { N_UNUSED = 0, N_JOINING, N_ALIVE, N_SUSPECT, N_DOWN, N_LEFT };
 enum { PG_I = 0, PG_S, PG_M, PG_PR, PG_PW };
 enum { W_PAGE = 1, W_INVAL, W_FETCH, W_JOIN, W_LOCK, W_STATS, W_PAGES };
+enum { W_PAGE = 1, W_INVAL, W_FETCH, W_JOIN, W_LOCK, W_BARRIER };
 #define DF_ALLOCATED 0x02
 
 typedef struct {
@@ -149,6 +150,7 @@ const char *node_state_name(int st);
 /* sync.c */
 void sync_on_acquire(const msg_header_t *h, const uint8_t *pl, uint32_t len);
 void sync_on_release(const msg_header_t *h, const uint8_t *pl, uint32_t len);
+void sync_on_barrier_enter(const msg_header_t *h, const uint8_t *pl, uint32_t len);
 void sync_node_down(int node);
 /* heartbeat.c */
 int heartbeat_start(void); void heartbeat_stop(void);

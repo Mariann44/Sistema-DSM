@@ -90,6 +90,7 @@ void waiter_complete(const msg_header_t *h, const uint8_t *pl, uint32_t len) {
     for (int i = 0; i < MAX_WAITERS; i++) {
         waiter_t *w = &G.waiters[i];
         if (!w->in_use || w->request_id != h->request_id) continue;
+        if (!w->pending_acks) break;                 /* ya se completó (o falló): se ignora */
         if (h->status != DSM_OK) w->status = h->status;
         if (w->reply_buf && len) { w->reply_len = len < w->reply_cap ? len : w->reply_cap; memcpy(w->reply_buf, pl, w->reply_len); }
         if (h->type == MSG_INVALIDATE_ACK && w->pending_acks > 1) w->pending_acks--;
@@ -102,7 +103,9 @@ void waiter_fail_node(int node) {
     pthread_mutex_lock(&G.waiters_mx);
     for (int i = 0; i < MAX_WAITERS; i++) {
         waiter_t *w = &G.waiters[i];
-        if (w->in_use && w->dst_node == node) { w->status = DSM_E_NODE_DOWN; w->pending_acks = 0; sem_post(&w->sem); }
+        /* pending_acks == 0: la respuesta ya llegó; no se sobrescribe con NODE_DOWN aunque el
+         * nodo salga justo después (p. ej. BARRIER_RELEASE seguido de NODE_LEAVE). */
+        if (w->in_use && w->dst_node == node && w->pending_acks) { w->status = DSM_E_NODE_DOWN; w->pending_acks = 0; sem_post(&w->sem); }
     }
     pthread_mutex_unlock(&G.waiters_mx);
 }
@@ -168,9 +171,10 @@ static void dispatch(int fd, msg_header_t *h, uint8_t *pl) {
     case MSG_PAGE_FETCH_REPLY: case MSG_INVALIDATE_ACK: case MSG_PAGES_REPLY: waiter_complete(h, pl, len); break;
     case MSG_LOCK_ACQUIRE: sync_on_acquire(h, pl, len); break;   /* hoja: solo encola o concede */
     case MSG_LOCK_RELEASE: sync_on_release(h, pl, len); break;
-    case MSG_LOCK_GRANT: waiter_complete(h, pl, len); break;
+    case MSG_LOCK_GRANT: case MSG_BARRIER_RELEASE: waiter_complete(h, pl, len); break;
     case MSG_STATS_REQUEST: stats_on_request(h); break;            /* hoja: responde con dsm_stats_t local */
     case MSG_STATS_REPLY: waiter_complete(h, pl, len); break;      /* hoja: despierta el waiter con reply_buf */
+    case MSG_BARRIER_ENTER: sync_on_barrier_enter(h, pl, len); break;   /* hoja: solo cuenta y libera */
     case MSG_ERROR: LOG(LOG_WARN, "ERROR de n%u: %.*s", h->src_node, (int)len, pl); break;
     default: LOG(LOG_WARN, "mensaje 0x%02x no soportado aún", h->type); break;
     }
