@@ -309,9 +309,7 @@ uint32_t pager_free_pages(void) {
     return f;
 }
 
-/* Mantiene al día la fila propia de la tabla de nodos (la que muestra `nodes` y viaja en JOIN_ACK).
- * Antes solo se llenaba en fill_self() y quedaba con el slice completo como libre, mientras que los
- * vecinos recibían por heartbeat el valor real: de ahí el desfase de FREE_PAGES. */
+/* Mantiene al día la fila propia de la tabla de nodos */
 void pager_update_self_free(void) {
     uint32_t f = pager_free_pages();          /* alloc_mx y nodes_mx nunca se toman anidados */
     pthread_mutex_lock(&G.nodes_mx);
@@ -383,9 +381,7 @@ void pager_on_alloc_commit(const uint8_t *pl, uint32_t len) {
     if (alloc_table_add(&a) != DSM_OK) LOG(LOG_WARN, "tabla de asignaciones llena (MAX_ALLOCS)");
 }
 
-/* Base: asigna páginas contiguas solo dentro del propio slice (sin ALLOC_REQUEST/REPLY todavía).
- * La asignación se registra localmente y se difunde con ALLOC_COMMIT para que todos los nodos
- * sepan a qué proceso pertenece cada página y en qué orden (seq = page_id - first_page). */
+/* Base: asigna páginas contiguas solo dentro del propio slice (sin ALLOC_REQUEST/REPLY todavía). */
 int pager_alloc(size_t size, void **out) {
     uint32_t n = (size + G.cfg.page_size - 1) / G.cfg.page_size, start;
     pthread_mutex_lock(&G.alloc_mx);

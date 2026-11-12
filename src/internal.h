@@ -19,13 +19,12 @@
 #define N_LOCKS        1024
 #define MAX_HOSTS      32
 #define MAX_ALLOCS     4096
+#define DF_ALLOCATED 0x02
 
 enum { LOG_ERROR = 0, LOG_WARN, LOG_INFO, LOG_DEBUG };
 enum { N_UNUSED = 0, N_JOINING, N_ALIVE, N_SUSPECT, N_DOWN, N_LEFT };
 enum { PG_I = 0, PG_S, PG_M, PG_PR, PG_PW };
-enum { W_PAGE = 1, W_INVAL, W_FETCH, W_JOIN, W_LOCK, W_STATS, W_PAGES };
-enum { W_PAGE = 1, W_INVAL, W_FETCH, W_JOIN, W_LOCK, W_BARRIER };
-#define DF_ALLOCATED 0x02
+enum { W_PAGE = 1, W_INVAL, W_FETCH, W_JOIN, W_LOCK, W_STATS, W_PAGES, W_BARRIER };
 
 typedef struct {
     uint32_t page_size, node_mem_mb, max_global_mb;
