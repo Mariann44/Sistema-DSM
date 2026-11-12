@@ -3,6 +3,7 @@ libdsm.a
 apps/hello_dsm
 apps/idle_dsm
 apps/counter
+tools/dsmctl
 
 # Compilados y librerías C
 *.o

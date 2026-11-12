@@ -108,7 +108,50 @@ void pager_serve_request(const msg_header_t *h) {
                       vb, 4, has_data ? sys_addr(p) : NULL, has_data ? G.cfg.page_size : 0);
         if (has_data) atomic_fetch_add(&G.st.pages_sent, 1);
     }
+
     sem_post(dlock(p));
+}
+
+uint32_t pager_collect_pages(uint8_t *buf, uint32_t cap) {
+    uint32_t count = 0;
+    uint32_t first = G.slice_first;
+    uint32_t end = first + G.slice_num;
+    if (cap < PAGE_INFO_WIRE_LEN) return 0;
+
+    for (uint32_t p = first; p < end; p++) {
+        uint16_t owner;
+        uint32_t version;
+        uint8_t allocated;
+        sem_wait(dlock(p));
+        allocated = (G.dir[p].flags & DF_ALLOCATED) != 0;
+        owner = G.dir[p].owner;
+        version = G.dir[p].version;
+        sem_post(dlock(p));
+        if (!allocated) continue;
+        if (count > (cap - PAGE_INFO_WIRE_LEN) / PAGE_INFO_WIRE_LEN) break;
+
+        uint8_t *out = buf + count * PAGE_INFO_WIRE_LEN;
+        put32(out, p);
+        out[4] = G.pages[p].state;
+        out[5] = allocated;
+        put16(out + 6, owner);
+        put32(out + 8, version);
+        put16(out + 12, G.me);
+        put16(out + 14, 0);
+        count++;
+    }
+    return count * PAGE_INFO_WIRE_LEN;
+}
+
+void pager_serve_pages_request(const msg_header_t *h) {
+    uint8_t *payload = malloc(MAX_PAYLOAD);
+    if (!payload) {
+        send_msg_node(h->src_node, MSG_PAGES_REPLY, 0, h->request_id, 0, DSM_E_NOMEM, NULL, 0, NULL, 0);
+        return;
+    }
+    uint32_t len = pager_collect_pages(payload, MAX_PAYLOAD);
+    send_msg_node(h->src_node, MSG_PAGES_REPLY, 0, h->request_id, 0, DSM_OK, payload, len, NULL, 0);
+    free(payload);
 }
 
 /* ---------- nodo con copia: mensajes del hilo de red (hoja, nunca esperan a otro nodo) ---------- */
@@ -238,10 +281,19 @@ int pager_init(void) {
 }
 
 void pager_init_slice(uint32_t first, uint32_t num) {
+    pthread_mutex_lock(&G.alloc_mx);
     G.slice_first = first; G.slice_num = num; G.alloc_next = first;
+    pthread_mutex_unlock(&G.alloc_mx);
     for (uint32_t p = first; p < first + num; p++) { G.pages[p].state = PG_M; G.dir[p].owner = G.me; G.dir[p].copyset = 0; }
-    if (first == 0) { G.dir[0].flags |= DF_ALLOCATED; G.alloc_next = 1; } /* página 0 = raíz */
+    if (first == 0) { /* página 0 = raíz: se registra como la asignación 0 del fundador */
+        G.dir[0].flags |= DF_ALLOCATED;
+        pthread_mutex_lock(&G.alloc_mx); G.alloc_next = 1; pthread_mutex_unlock(&G.alloc_mx);
+        alloc_entry_t root = { .alloc_id = (uint64_t)G.me << 48, .size_bytes = G.cfg.page_size,
+                               .dsm_pid = make_dsm_pid(G.me, (uint32_t)getpid()), .first_page = 0, .num_pages = 1 };
+        alloc_table_add(&root);
+    }
     mprotect(app_addr(first), (size_t)num * G.cfg.page_size, PROT_READ | PROT_WRITE);
+    pager_update_self_free();
 }
 
 void pager_shutdown(void) {
@@ -249,14 +301,107 @@ void pager_shutdown(void) {
     free(G.pages); free(G.dir); G.pages = NULL; G.dir = NULL;
 }
 
-/* Base: asigna páginas contiguas solo dentro del propio slice (sin ALLOC_REQUEST/COMMIT todavía). */
+/* ---------- páginas libres del slice propio ---------- */
+uint32_t pager_free_pages(void) {
+    pthread_mutex_lock(&G.alloc_mx);
+    uint32_t f = G.slice_num - (G.alloc_next - G.slice_first);
+    pthread_mutex_unlock(&G.alloc_mx);
+    return f;
+}
+
+/* Mantiene al día la fila propia de la tabla de nodos (la que muestra `nodes` y viaja en JOIN_ACK).
+ * Antes solo se llenaba en fill_self() y quedaba con el slice completo como libre, mientras que los
+ * vecinos recibían por heartbeat el valor real: de ahí el desfase de FREE_PAGES. */
+void pager_update_self_free(void) {
+    uint32_t f = pager_free_pages();          /* alloc_mx y nodes_mx nunca se toman anidados */
+    pthread_mutex_lock(&G.nodes_mx);
+    if (G.me < MAX_NODES_HARD) G.nodes[G.me].free_pages = f;
+    pthread_mutex_unlock(&G.nodes_mx);
+}
+
+/* ---------- tabla de asignaciones replicada (orden por first_page) ---------- */
+void alloc_wire(uint8_t *b, const alloc_entry_t *a) {
+    put64(b, a->alloc_id); put64(b + 8, a->size_bytes); put32(b + 16, a->dsm_pid);
+    put32(b + 20, a->first_page); put32(b + 24, a->num_pages); put32(b + 28, 0);
+}
+void alloc_unwire(const uint8_t *b, alloc_entry_t *a) {
+    a->alloc_id = get64(b); a->size_bytes = get64(b + 8); a->dsm_pid = get32(b + 16);
+    a->first_page = get32(b + 20); a->num_pages = get32(b + 24); a->reserved = 0;
+}
+
+/* Inserta en orden; si el alloc_id ya existe (JOIN_ACK + ALLOC_COMMIT repetido) no hace nada. */
+int alloc_table_add(const alloc_entry_t *a) {
+    int rc = DSM_OK;
+    pthread_rwlock_wrlock(&G.allocs_rw);
+    for (int i = 0; i < G.n_allocs; i++) if (G.allocs[i].alloc_id == a->alloc_id) goto out;
+    if (G.n_allocs >= MAX_ALLOCS) { rc = DSM_E_NOMEM; goto out; }
+    int pos = G.n_allocs;
+    while (pos > 0 && G.allocs[pos - 1].first_page > a->first_page) { G.allocs[pos] = G.allocs[pos - 1]; pos--; }
+    G.allocs[pos] = *a; G.n_allocs++;
+out:
+    pthread_rwlock_unlock(&G.allocs_rw);
+    return rc;
+}
+
+/* Búsqueda binaria de la asignación que contiene la página. 1 si la encontró. */
+int alloc_table_find(uint32_t page, alloc_entry_t *out) {
+    int found = 0, lo = 0, hi;
+    pthread_rwlock_rdlock(&G.allocs_rw);
+    hi = G.n_allocs - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2; const alloc_entry_t *a = &G.allocs[mid];
+        if (page < a->first_page) hi = mid - 1;
+        else if (page >= a->first_page + a->num_pages) lo = mid + 1;
+        else { *out = *a; found = 1; break; }
+    }
+    pthread_rwlock_unlock(&G.allocs_rw);
+    return found;
+}
+
+int alloc_table_snapshot(alloc_entry_t *out, int cap) {
+    pthread_rwlock_rdlock(&G.allocs_rw);
+    int n = G.n_allocs < cap ? G.n_allocs : cap;
+    memcpy(out, G.allocs, (size_t)n * sizeof *out);
+    pthread_rwlock_unlock(&G.allocs_rw);
+    return n;
+}
+
+/* NODE_LEAVE: dsm_finalize libera las asignaciones del proceso que sale. */
+void alloc_table_remove_node(uint16_t node) {
+    pthread_rwlock_wrlock(&G.allocs_rw);
+    int j = 0;
+    for (int i = 0; i < G.n_allocs; i++)
+        if ((uint16_t)(G.allocs[i].alloc_id >> 48) != node) G.allocs[j++] = G.allocs[i];
+    G.n_allocs = j;
+    pthread_rwlock_unlock(&G.allocs_rw);
+}
+
+/* ALLOC_COMMIT (hoja): registra la asignación difundida por el nodo que asignó. */
+void pager_on_alloc_commit(const uint8_t *pl, uint32_t len) {
+    if (len < ALLOC_WIRE_LEN) return;
+    alloc_entry_t a; alloc_unwire(pl, &a);
+    if (alloc_table_add(&a) != DSM_OK) LOG(LOG_WARN, "tabla de asignaciones llena (MAX_ALLOCS)");
+}
+
+/* Base: asigna páginas contiguas solo dentro del propio slice (sin ALLOC_REQUEST/REPLY todavía).
+ * La asignación se registra localmente y se difunde con ALLOC_COMMIT para que todos los nodos
+ * sepan a qué proceso pertenece cada página y en qué orden (seq = page_id - first_page). */
 int pager_alloc(size_t size, void **out) {
     uint32_t n = (size + G.cfg.page_size - 1) / G.cfg.page_size, start;
     pthread_mutex_lock(&G.alloc_mx);
     if (G.alloc_next + n > G.slice_first + G.slice_num) { pthread_mutex_unlock(&G.alloc_mx); return DSM_E_NOMEM; }
     start = G.alloc_next; G.alloc_next += n;
+    uint64_t counter = ++G.alloc_counter;
     pthread_mutex_unlock(&G.alloc_mx);
     for (uint32_t p = start; p < start + n; p++) { sem_wait(dlock(p)); G.dir[p].flags |= DF_ALLOCATED; sem_post(dlock(p)); }
+
+    alloc_entry_t a = { .alloc_id = ((uint64_t)G.me << 48) | (counter & 0xFFFFFFFFFFFFULL), .size_bytes = size,
+                        .dsm_pid = make_dsm_pid(G.me, (uint32_t)getpid()), .first_page = start, .num_pages = n };
+    if (alloc_table_add(&a) != DSM_OK) LOG(LOG_WARN, "tabla de asignaciones llena (MAX_ALLOCS)");
+    uint8_t wire[ALLOC_WIRE_LEN]; alloc_wire(wire, &a);
+    for (int i = 0; i < G.n_nodes; i++)
+        if (i != G.me) send_msg_node(i, MSG_ALLOC_COMMIT, 0, 0, start, DSM_OK, wire, sizeof wire, NULL, 0);
+    pager_update_self_free();
     *out = app_addr(start);
     return DSM_OK;
 }

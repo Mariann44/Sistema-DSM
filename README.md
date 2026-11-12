@@ -12,6 +12,8 @@ con `config_hash`, hilo de red con `poll` + hilos de servicio.
     ./apps/hello_dsm conf/dsm_local.conf 3     # una terminal por nodo (el primero es el fundador)
     ./apps/idle_dsm conf/dsm_local.conf 60     # nodo que solo se queda vivo 60 s (para probar el heartbeat)
     ./apps/counter conf/dsm_local.conf 3 1000          # contador con lock (agregar "sinlock" para ver la pérdida)
+    ./tools/dsmctl 127.0.0.1 0 stats global            # consultar estadísticas o nodos desde terminal
+    ./tools/dsmctl 127.0.0.1 0 pages global            # consultar páginas asignadas en todos los nodos
 
 ## Mapa de módulos
 | Archivo | Contenido |
@@ -23,7 +25,7 @@ con `config_hash`, hilo de red con `poll` + hilos de servicio.
 | `src/membership.c` | slot/puertos, JOIN_REQUEST/ACK, NODE_JOINED, `home_of()` |
 | `src/heartbeat.c` | latidos por `HB_PORT`, estados ALIVE/SUSPECT/DOWN |
 | `src/sync.c` | locks distribuidos: LOCK_ACQUIRE/GRANT/RELEASE, cola en el administrador |
-| `src/pager.c` | memfd + 2 vistas, handler SIGSEGV, MSI, directorio, PAGE_*/INVALIDATE |
+| `src/pager.c` | memfd + 2 vistas, handler SIGSEGV, MSI, directorio, PAGE_*/INVALIDATE y PAGES_*/REPLY |
 | `src/dsm.c` | `dsm_init/finalize/alloc/prefetch/get_stats` |
 
 ## Implementado

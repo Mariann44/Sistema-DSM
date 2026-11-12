@@ -79,20 +79,22 @@ static void fill_self(uint16_t id, uint32_t first, uint32_t num) {
     n->node_id = id; n->state = N_ALIVE; n->slot = G.slot; n->ipv4 = G.my_ip;
     n->data_port = G.cfg.port_base + 4 * G.slot; n->hb_port = n->data_port + 1;
     n->ctl_port = n->data_port + 2; n->http_port = n->data_port + 3;
-    n->first_page = first; n->num_pages = num; n->free_pages = num;
+    n->first_page = first; n->num_pages = num; n->free_pages = num; n->os_pid = (uint32_t)getpid();
 }
 static void wire_node(uint8_t *b, const node_entry_t *n) {
-    put16(b, n->node_id); b[2] = n->state; b[3] = 0; put32(b + 4, n->ipv4);
+    put16(b, n->node_id); b[2] = n->state; b[3] = n->slot; put32(b + 4, n->ipv4);
     put16(b + 8, n->data_port); put16(b + 10, n->hb_port); put16(b + 12, n->ctl_port); put16(b + 14, n->http_port);
     put32(b + 16, n->first_page); put32(b + 20, n->num_pages); put32(b + 24, n->free_pages);
+    put32(b + 28, n->os_pid);
 }
 static void unwire_node(const uint8_t *b) { /* conserva data_fd, hb_fd y send_lock */
     uint16_t id = get16(b);
     if (id >= MAX_NODES_HARD) return;
     node_entry_t *n = &G.nodes[id];
-    n->node_id = id; n->state = b[2]; n->ipv4 = get32(b + 4);
+    n->node_id = id; n->state = b[2]; n->slot = b[3]; n->ipv4 = get32(b + 4);
     n->data_port = get16(b + 8); n->hb_port = get16(b + 10); n->ctl_port = get16(b + 12); n->http_port = get16(b + 14);
     n->first_page = get32(b + 16); n->num_pages = get32(b + 20); n->free_pages = get32(b + 24);
+    n->os_pid = get32(b + 28);
     n->last_hb_ms = now_ms();                      /* plazo de gracia antes de exigir latidos */
     if (id >= G.n_nodes) G.n_nodes = id + 1;
 }
@@ -116,6 +118,10 @@ void membership_serve_join(int fd, const msg_header_t *h, const uint8_t *pl) {
             node_entry_t *n = &G.nodes[id];
             n->node_id = id; n->state = N_ALIVE; n->ipv4 = get32(pl + 8);
             n->data_port = get16(pl + 12); n->hb_port = get16(pl + 14); n->ctl_port = get16(pl + 16); n->http_port = get16(pl + 18);
+            /* El slot no viaja en JOIN_REQUEST, pero se deduce de DATA_PORT = PORT_BASE + 4 * slot. */
+            uint16_t dport = n->data_port;
+            n->slot = dport >= G.cfg.port_base ? (uint8_t)((dport - G.cfg.port_base) / 4) : 0;
+            n->os_pid = get32(pl + 24);
             n->first_page = next; n->num_pages = mem_pages; n->free_pages = mem_pages; n->data_fd = fd;
             n->last_hb_ms = now_ms();
             G.n_nodes++;
@@ -126,15 +132,26 @@ void membership_serve_join(int fd, const msg_header_t *h, const uint8_t *pl) {
         send_msg_fd(fd, NULL, MSG_JOIN_ACK, 0, h->request_id, 0, st, NULL, 0, NULL, 0);
         sem_post(&join_sem); return;
     }
-    uint8_t *ack = malloc(12 + NODE_WIRE_LEN * MAX_NODES_HARD);
+    pager_update_self_free();                    /* la fila propia viaja en JOIN_ACK con el valor real */
+    size_t ack_cap = 12 + (size_t)NODE_WIRE_LEN * MAX_NODES_HARD + (size_t)ALLOC_WIRE_LEN * MAX_ALLOCS;
+    uint8_t *ack = malloc(ack_cap);
+    alloc_entry_t *snap = malloc(sizeof(alloc_entry_t) * MAX_ALLOCS);
+    if (!ack || !snap) {
+        free(ack); free(snap);
+        send_msg_fd(fd, NULL, MSG_JOIN_ACK, 0, h->request_id, 0, DSM_E_NOMEM, NULL, 0, NULL, 0);
+        sem_post(&join_sem); return;
+    }
+    int na = alloc_table_snapshot(snap, MAX_ALLOCS);
     pthread_mutex_lock(&G.nodes_mx);
     int n = G.n_nodes;
-    put16(ack, id); put16(ack + 2, 0); put32(ack + 4, n); put32(ack + 8, 0 /* n_allocs: TODO */);
+    put16(ack, id); put16(ack + 2, 0); put32(ack + 4, n); put32(ack + 8, na);
     for (int i = 0; i < n; i++) wire_node(ack + 12 + NODE_WIRE_LEN * i, &G.nodes[i]);
     uint8_t joined[NODE_WIRE_LEN]; wire_node(joined, &G.nodes[id]);
     pthread_mutex_unlock(&G.nodes_mx);
-    send_msg_node(id, MSG_JOIN_ACK, 0, h->request_id, 0, DSM_OK, ack, 12 + NODE_WIRE_LEN * n, NULL, 0);
-    free(ack);
+    uint32_t off = 12 + NODE_WIRE_LEN * n;
+    for (int i = 0; i < na; i++, off += ALLOC_WIRE_LEN) alloc_wire(ack + off, &snap[i]);
+    send_msg_node(id, MSG_JOIN_ACK, 0, h->request_id, 0, DSM_OK, ack, off, NULL, 0);
+    free(ack); free(snap);
     for (int i = 0; i < n; i++)               /* avisa a los demás (no al contacto ni al nuevo) */
         if (i != id && i != G.me) send_msg_node(i, MSG_NODE_JOINED, 0, 0, 0, DSM_OK, joined, NODE_WIRE_LEN, NULL, 0);
     LOG(LOG_INFO, "nodo %u se unió (páginas %u..%u)", id, G.nodes[id].first_page, G.nodes[id].first_page + mem_pages - 1);
@@ -149,8 +166,8 @@ void membership_on_node_joined(const uint8_t *pl, uint32_t len) {
 /* ---- lado nuevo nodo (corre en el hilo de red) ---- */
 void membership_on_join_ack(int fd, const msg_header_t *h, const uint8_t *pl, uint32_t len) {
     if (h->status != DSM_OK || len < 12) return;
-    uint16_t id = get16(pl); uint32_t n = get32(pl + 4);
-    if (len < 12 + n * NODE_WIRE_LEN) return;
+    uint16_t id = get16(pl); uint32_t n = get32(pl + 4), na = get32(pl + 8);
+    if (n > MAX_NODES_HARD || na > MAX_ALLOCS || len < 12 + n * NODE_WIRE_LEN + na * ALLOC_WIRE_LEN) return;
     pthread_mutex_lock(&G.nodes_mx);
     for (uint32_t i = 0; i < n; i++) unwire_node(pl + 12 + NODE_WIRE_LEN * i);
     G.nodes[h->src_node].data_fd = fd;           /* el contacto */
@@ -158,6 +175,10 @@ void membership_on_join_ack(int fd, const msg_header_t *h, const uint8_t *pl, ui
     G.me = id;
     uint32_t first = G.nodes[id].first_page, num = G.nodes[id].num_pages;
     pthread_mutex_unlock(&G.nodes_mx);
+    for (uint32_t i = 0; i < na; i++) {          /* tabla de asignaciones replicada */
+        alloc_entry_t a; alloc_unwire(pl + 12 + NODE_WIRE_LEN * n + ALLOC_WIRE_LEN * i, &a);
+        alloc_table_add(&a);
+    }
     pager_init_slice(first, num);                /* antes de que nadie pueda pedirnos páginas */
 }
 
@@ -177,7 +198,7 @@ int membership_join(void) {
     put16(req + 16, G.cfg.port_base + 4 * G.slot + 2); put16(req + 18, G.cfg.port_base + 4 * G.slot + 3);
     put32(req + 20, mem_pages); put32(req + 24, getpid());
 
-    static uint8_t ackbuf[12 + NODE_WIRE_LEN * MAX_NODES_HARD];
+    static uint8_t ackbuf[12 + NODE_WIRE_LEN * MAX_NODES_HARD]; /* solo status; el payload se procesa en on_join_ack */
     uint64_t t0 = now_ms(); int contact = -1, cfd = -1, rc = DSM_E_JOIN_TIMEOUT;
     G.me = NODE_UNKNOWN;
     while (now_ms() - t0 < G.cfg.join_timeout_ms && contact < 0) {
@@ -220,6 +241,7 @@ int membership_join(void) {
 void membership_on_leave(int src) {
     if (src >= MAX_NODES_HARD) return;
     pthread_mutex_lock(&G.nodes_mx); G.nodes[src].state = N_LEFT; pthread_mutex_unlock(&G.nodes_mx);
+    alloc_table_remove_node(src);                /* dsm_finalize libera sus asignaciones */
     waiter_fail_node(src); sync_node_down(src);
     LOG(LOG_INFO, "nodo %d salió del clúster", src);
 }

@@ -18,11 +18,12 @@
 #define MAX_WAITERS    256
 #define N_LOCKS        1024
 #define MAX_HOSTS      32
+#define MAX_ALLOCS     4096
 
 enum { LOG_ERROR = 0, LOG_WARN, LOG_INFO, LOG_DEBUG };
 enum { N_UNUSED = 0, N_JOINING, N_ALIVE, N_SUSPECT, N_DOWN, N_LEFT };
 enum { PG_I = 0, PG_S, PG_M, PG_PR, PG_PW };
-enum { W_PAGE = 1, W_INVAL, W_FETCH, W_JOIN, W_LOCK, W_STATS };
+enum { W_PAGE = 1, W_INVAL, W_FETCH, W_JOIN, W_LOCK, W_STATS, W_PAGES };
 #define DF_ALLOCATED 0x02
 
 typedef struct {
@@ -54,6 +55,7 @@ typedef struct {
     uint32_t ipv4; /* orden de host */
     uint16_t data_port, hb_port, ctl_port, http_port;
     uint32_t first_page, num_pages, free_pages;
+    uint32_t os_pid;      /* PID del proceso del SO que corre este nodo */
     int data_fd;
     int hb_fd;            /* conexión de salida hacia su HB_PORT (solo latidos); -1 si no hay */
     uint64_t last_hb_ms;  /* último latido recibido de este nodo (CLOCK_MONOTONIC) */
@@ -72,6 +74,23 @@ typedef struct {
         inv_sent, inv_received, bytes_sent, bytes_received, fault_us, msgs_sent;
 } stats_t;
 
+/* Una asignación (dsm_alloc). Tabla replicada en todos los nodos, ordenada por first_page. */
+typedef struct { /* 32 bytes */
+    uint64_t alloc_id;    /* node_id en los 16 bits altos, contador local en los 48 bajos */
+    uint64_t size_bytes;
+    uint32_t dsm_pid;     /* (node_id << 16) | (pid & 0xFFFF) */
+    uint32_t first_page, num_pages, reserved;
+} alloc_entry_t;
+
+typedef struct {
+    uint32_t page_id;
+    uint8_t state;
+    uint8_t allocated;
+    uint16_t owner;
+    uint32_t version;
+    uint16_t home;
+} page_info_t;
+
 typedef struct {
     dsm_config_t cfg;
     int inited; volatile int running;
@@ -86,6 +105,8 @@ typedef struct {
     int ctl_listen_fd;
     uint32_t slice_first, slice_num, alloc_next;
     pthread_mutex_t alloc_mx;
+    uint64_t alloc_counter;                         /* protegido por alloc_mx */
+    alloc_entry_t allocs[MAX_ALLOCS]; int n_allocs; pthread_rwlock_t allocs_rw;
     stats_t st;
 } dsm_ctx_t;
 extern dsm_ctx_t G;
@@ -140,5 +161,18 @@ void pager_on_page_data(const msg_header_t *h, const uint8_t *pl, uint32_t len);
 void pager_on_fetch(const msg_header_t *h);
 void pager_on_invalidate(const msg_header_t *h);
 void pager_serve_request(const msg_header_t *h);
+void pager_serve_pages_request(const msg_header_t *h);
+uint32_t pager_collect_pages(uint8_t *buf, uint32_t cap);
 int pager_alloc(size_t size, void **out);
+uint32_t pager_free_pages(void);
+void pager_update_self_free(void);
+/* tabla de asignaciones replicada (pager.c) */
+static inline dsm_pid_t make_dsm_pid(uint16_t node, uint32_t os_pid) { return ((uint32_t)node << 16) | (os_pid & 0xFFFF); }
+void alloc_wire(uint8_t *b, const alloc_entry_t *a);
+void alloc_unwire(const uint8_t *b, alloc_entry_t *a);
+int  alloc_table_add(const alloc_entry_t *a);
+int  alloc_table_find(uint32_t page, alloc_entry_t *out);
+int  alloc_table_snapshot(alloc_entry_t *out, int cap);
+void alloc_table_remove_node(uint16_t node);
+void pager_on_alloc_commit(const uint8_t *pl, uint32_t len);
 #endif

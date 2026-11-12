@@ -17,8 +17,10 @@ enum msg_type {
     MSG_PAGE_REQUEST = 0x10, MSG_PAGE_DATA = 0x11, MSG_PAGE_FETCH = 0x12,
     MSG_PAGE_FETCH_REPLY = 0x13, MSG_INVALIDATE = 0x14, MSG_INVALIDATE_ACK = 0x15,
     MSG_PAGE_WRITEBACK = 0x16, MSG_WRITEBACK_ACK = 0x17,
+    MSG_ALLOC_COMMIT = 0x22,
     MSG_LOCK_ACQUIRE = 0x30, MSG_LOCK_GRANT = 0x31, MSG_LOCK_RELEASE = 0x32,
     MSG_STATS_REQUEST = 0x40, MSG_STATS_REPLY = 0x41,
+    MSG_PAGES_REQUEST = 0x42, MSG_PAGES_REPLY = 0x43,
     MSG_ERROR = 0x7F
 };
 #define F_WRITE       0x0001
@@ -43,6 +45,12 @@ static inline uint32_t get32(const uint8_t *b) { uint32_t v; memcpy(&v, b, 4); r
 static inline uint64_t get64(const uint8_t *b) { uint64_t v; memcpy(&v, b, 8); return be64toh(v); }
 
 #define JOIN_REQ_LEN   28
-#define NODE_WIRE_LEN  28
+/* node_wire_t (32 B): node_id u16, state u8, slot u8, ipv4 u32, data/hb/ctl/http_port u16 x4,
+ * first_page u32, num_pages u32, free_pages u32, os_pid u32. (Entregable 1: 28 B; se usa el byte
+ * reservado para el slot y se agrega os_pid al final.) */
+#define NODE_WIRE_LEN  32
+/* alloc_wire_t (32 B): alloc_id u64, size_bytes u64, dsm_pid u32, first_page u32, num_pages u32, reserved u32 */
+#define ALLOC_WIRE_LEN 32
 #define HEARTBEAT_LEN  16  /* state u8, reserved u8[3], free_pages u32, timestamp_ms u64 */
+#define PAGE_INFO_WIRE_LEN 16 /* page u32, state u8, allocated u8, owner u16, version u32, home u16, reserved u16 */
 #endif

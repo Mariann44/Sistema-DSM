@@ -128,6 +128,7 @@ static void *svc_main(void *arg) {
         svc_item_t it = queue[q_head]; q_head = (q_head + 1) % QCAP; q_count--;
         pthread_mutex_unlock(&q_mx);
         if (it.h.type == MSG_PAGE_REQUEST) pager_serve_request(&it.h);
+        else if (it.h.type == MSG_PAGES_REQUEST) pager_serve_pages_request(&it.h);
         else if (it.h.type == MSG_JOIN_REQUEST) membership_serve_join(it.fd, &it.h, it.pl);
         free(it.pl);
     }
@@ -156,14 +157,15 @@ static void dispatch(int fd, msg_header_t *h, uint8_t *pl) {
         }
         break;
     case MSG_HEARTBEAT: break; /* los latidos llegan por HB_PORT (heartbeat.c), no por esta conexión */
-    case MSG_JOIN_REQUEST: case MSG_PAGE_REQUEST: enqueue(h, pl, fd); own = 0; break;
+    case MSG_JOIN_REQUEST: case MSG_PAGE_REQUEST: case MSG_PAGES_REQUEST: enqueue(h, pl, fd); own = 0; break;
     case MSG_JOIN_ACK: membership_on_join_ack(fd, h, pl, len); waiter_complete(h, pl, len); break;
     case MSG_NODE_JOINED: membership_on_node_joined(pl, len); break;
     case MSG_NODE_LEAVE: membership_on_leave(h->src_node); break;
+    case MSG_ALLOC_COMMIT: pager_on_alloc_commit(pl, len); break;   /* hoja: registra la asignación */
     case MSG_PAGE_DATA: pager_on_page_data(h, pl, len); break;
     case MSG_PAGE_FETCH: pager_on_fetch(h); break;
     case MSG_INVALIDATE: pager_on_invalidate(h); break;
-    case MSG_PAGE_FETCH_REPLY: case MSG_INVALIDATE_ACK: waiter_complete(h, pl, len); break;
+    case MSG_PAGE_FETCH_REPLY: case MSG_INVALIDATE_ACK: case MSG_PAGES_REPLY: waiter_complete(h, pl, len); break;
     case MSG_LOCK_ACQUIRE: sync_on_acquire(h, pl, len); break;   /* hoja: solo encola o concede */
     case MSG_LOCK_RELEASE: sync_on_release(h, pl, len); break;
     case MSG_LOCK_GRANT: waiter_complete(h, pl, len); break;

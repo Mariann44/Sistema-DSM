@@ -81,9 +81,11 @@ static void poll_incoming(int timeout_ms) {
 static void send_beats(void) {
     uint8_t pl[HEARTBEAT_LEN] = {0};
     pl[0] = N_ALIVE;
-    pthread_mutex_lock(&G.alloc_mx);
-    put32(pl + 4, G.slice_num - (G.alloc_next - G.slice_first));
-    pthread_mutex_unlock(&G.alloc_mx);
+    uint32_t free_pages = pager_free_pages();
+    put32(pl + 4, free_pages);
+    pthread_mutex_lock(&G.nodes_mx);              /* misma cifra en la fila propia que la que ven los vecinos */
+    G.nodes[G.me].free_pages = free_pages;
+    pthread_mutex_unlock(&G.nodes_mx);
     put64(pl + 8, now_ms());
 
     for (int i = 0; i < MAX_NODES_HARD; i++) {

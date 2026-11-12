@@ -10,6 +10,7 @@ int dsm_init(const char *config_path) {
     int rc = config_load(config_path, &G.cfg);
     if (rc) return rc;
     pthread_mutex_init(&G.nodes_mx, NULL); pthread_mutex_init(&G.waiters_mx, NULL); pthread_mutex_init(&G.alloc_mx, NULL);
+    pthread_rwlock_init(&G.allocs_rw, NULL);
     for (int i = 0; i < MAX_NODES_HARD; i++) {
         G.nodes[i].data_fd = -1; G.nodes[i].hb_fd = -1; pthread_mutex_init(&G.nodes[i].send_lock, NULL);
     }
@@ -84,7 +85,7 @@ void fill_local_stats(dsm_stats_t *o) {
     o->fault_time_total_us = G.st.fault_us;
     o->messages_sent = G.st.msgs_sent;
     o->pages_owned = G.slice_num;
-    o->pages_allocated = G.alloc_next - G.slice_first;
+    o->pages_allocated = G.slice_num - pager_free_pages();
     for (uint32_t p = 0; p < G.max_pages; p++) {
         if ((p < G.slice_first || p >= G.slice_first + G.slice_num) &&
             (G.pages[p].state == PG_S || G.pages[p].state == PG_M)) {
