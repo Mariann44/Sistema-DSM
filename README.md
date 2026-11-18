@@ -9,6 +9,7 @@ con `config_hash`, hilo de red con `poll` + hilos de servicio.
     make test                 # 3 nodos locales: coherencia, fases separadas con dsm_barrier
     make test-hb              # heartbeat: pausa un nodo y verifica SUSPECT, recuperación y DOWN (~35 s)
     make test-lock            # 3 nodos x 300 incrementos de un contador compartido con dsm_lock
+    make test-alloc           # 3 nodos: asignación que cruza slices, choque de reservas y DSM_E_NOMEM
     ./apps/hello_dsm conf/dsm_local.conf 3     # una terminal por nodo (el primero es el fundador)
     ./apps/idle_dsm conf/dsm_local.conf 60     # nodo que solo se queda vivo 60 s (para probar el heartbeat)
     ./apps/counter conf/dsm_local.conf 3 1000          # contador con lock (agregar "sinlock" para ver la pérdida)
@@ -26,12 +27,18 @@ con `config_hash`, hilo de red con `poll` + hilos de servicio.
 | `src/heartbeat.c` | latidos por `HB_PORT`, estados ALIVE/SUSPECT/DOWN |
 | `src/sync.c` | locks (LOCK_ACQUIRE/GRANT/RELEASE) y barreras (BARRIER_ENTER/RELEASE) |
 | `src/pager.c` | memfd + 2 vistas, handler SIGSEGV, MSI, directorio, PAGE_*/INVALIDATE |
+| `src/alloc.c` | `dsm_alloc` distribuida en dos fases (ALLOC_REQUEST/REPLY/COMMIT/ABORT) |
 | `src/dsm.c` | `dsm_init/finalize/alloc/prefetch/get_stats` |
 
 ## Implementado
 - Fallos de lectura/escritura entre nodos (S, M, I, PR, PW), invalidación, fetch al dueño en M.
 - Cada nodo aporta su slice; el home sirve las páginas de su slice; la página 0 es la raíz.
-- `dsm_alloc` dentro del propio slice (publicar el puntero en `dsm_root()`).
+- `dsm_alloc` distribuida: el rango de páginas es siempre contiguo (un solo puntero) y puede cruzar
+  los slices de varios nodos. Se prefiere el rango con más páginas en el slice propio; si no cabe,
+  se reserva en cada home involucrado (ALLOC_REQUEST, en orden ascendente) y se confirma con
+  ALLOC_COMMIT a todos. Si un home rechaza porque otro nodo reservó antes, se envía ALLOC_ABORT y
+  se reintenta en otro rango. Sin memoria contigua libre en el clúster retorna `DSM_E_NOMEM`.
+  Para compartir una asignación, publicar el puntero en `dsm_root()`.
 - Heartbeat: cada nodo envía un HEARTBEAT por segundo al `HB_PORT` de cada vecino, en una
   conexión aparte de la de datos y con su propio hilo. Sin latidos por `SUSPECT_AFTER_MS` el vecino
   pasa a SUSPECT (y vuelve a ALIVE si late de nuevo); por `HEARTBEAT_TIMEOUT_MS`, a DOWN de forma
@@ -47,7 +54,7 @@ con `config_hash`, hilo de red con `poll` + hilos de servicio.
   llegadas pendientes, todos salen con `DSM_E_NODE_DOWN`. Las pruebas usan barreras en vez de banderas.
 
 ## Pendiente (siguiente trabajo)
-1. `dsm_alloc` distribuido (ALLOC_REQUEST/REPLY/COMMIT/ABORT) y `dsm_free`.
+1. `dsm_free` (FREE_REQUEST/REPLY/COMMIT) y reutilizar las páginas de un nodo que sale.
 2. PAGE_WRITEBACK en `dsm_finalize` y reemplazo por `CACHE_MAX_PAGES` (las páginas M remotas se pierden al salir).
 3. `dsmctl` / puerto de control, estadísticas globales, HTTP.
 4. Uniones concurrentes en contactos distintos pueden asignar el mismo rango (hoy: arrancar nodos de a uno).

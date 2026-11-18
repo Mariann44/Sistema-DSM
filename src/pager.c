@@ -72,7 +72,8 @@ static int invalidate_set(uint32_t p, uint64_t mask) {
 static int home_serve(uint32_t p, uint16_t R, int write, int has_copy, int *has_data, int *grant_w, uint32_t *ver) {
     dir_entry_t *d = &G.dir[p]; uint64_t bit = 1ULL << R; int rc = DSM_OK;
     *has_data = 0; *grant_w = write;
-    if (!(d->flags & DF_ALLOCATED)) return DSM_E_INVAL;
+    /* DF_RESERVED también vale: el COMMIT y la primera solicitud del que asignó pueden cruzarse */
+    if (!(__atomic_load_n(&d->flags, __ATOMIC_ACQUIRE) & (DF_ALLOCATED | DF_RESERVED))) return DSM_E_INVAL;
     if (!write) {
         if (d->owner == R) { *grant_w = 1; goto out; } /* reintento tardío: ya es dueño */
         if (d->owner != NONE_OWNER) {
@@ -282,12 +283,11 @@ int pager_init(void) {
 
 void pager_init_slice(uint32_t first, uint32_t num) {
     pthread_mutex_lock(&G.alloc_mx);
-    G.slice_first = first; G.slice_num = num; G.alloc_next = first;
+    G.slice_first = first; G.slice_num = num; G.slice_free = num - (first == 0 ? 1 : 0);
     pthread_mutex_unlock(&G.alloc_mx);
     for (uint32_t p = first; p < first + num; p++) { G.pages[p].state = PG_M; G.dir[p].owner = G.me; G.dir[p].copyset = 0; }
     if (first == 0) { /* página 0 = raíz: se registra como la asignación 0 del fundador */
-        G.dir[0].flags |= DF_ALLOCATED;
-        pthread_mutex_lock(&G.alloc_mx); G.alloc_next = 1; pthread_mutex_unlock(&G.alloc_mx);
+        __atomic_fetch_or(&G.dir[0].flags, DF_ALLOCATED, __ATOMIC_RELEASE);
         alloc_entry_t root = { .alloc_id = (uint64_t)G.me << 48, .size_bytes = G.cfg.page_size,
                                .dsm_pid = make_dsm_pid(G.me, (uint32_t)getpid()), .first_page = 0, .num_pages = 1 };
         alloc_table_add(&root);
@@ -304,7 +304,7 @@ void pager_shutdown(void) {
 /* ---------- páginas libres del slice propio ---------- */
 uint32_t pager_free_pages(void) {
     pthread_mutex_lock(&G.alloc_mx);
-    uint32_t f = G.slice_num - (G.alloc_next - G.slice_first);
+    uint32_t f = G.slice_free;
     pthread_mutex_unlock(&G.alloc_mx);
     return f;
 }
@@ -374,30 +374,11 @@ void alloc_table_remove_node(uint16_t node) {
     pthread_rwlock_unlock(&G.allocs_rw);
 }
 
-/* ALLOC_COMMIT (hoja): registra la asignación difundida por el nodo que asignó. */
+/* ALLOC_COMMIT (hoja): registra la asignación difundida por el nodo que asignó. Si este nodo es
+ * home de algún tramo, además convierte su reserva en asignación (alloc.c). */
 void pager_on_alloc_commit(const uint8_t *pl, uint32_t len) {
     if (len < ALLOC_WIRE_LEN) return;
     alloc_entry_t a; alloc_unwire(pl, &a);
     if (alloc_table_add(&a) != DSM_OK) LOG(LOG_WARN, "tabla de asignaciones llena (MAX_ALLOCS)");
-}
-
-/* Base: asigna páginas contiguas solo dentro del propio slice (sin ALLOC_REQUEST/REPLY todavía). */
-int pager_alloc(size_t size, void **out) {
-    uint32_t n = (size + G.cfg.page_size - 1) / G.cfg.page_size, start;
-    pthread_mutex_lock(&G.alloc_mx);
-    if (G.alloc_next + n > G.slice_first + G.slice_num) { pthread_mutex_unlock(&G.alloc_mx); return DSM_E_NOMEM; }
-    start = G.alloc_next; G.alloc_next += n;
-    uint64_t counter = ++G.alloc_counter;
-    pthread_mutex_unlock(&G.alloc_mx);
-    for (uint32_t p = start; p < start + n; p++) { sem_wait(dlock(p)); G.dir[p].flags |= DF_ALLOCATED; sem_post(dlock(p)); }
-
-    alloc_entry_t a = { .alloc_id = ((uint64_t)G.me << 48) | (counter & 0xFFFFFFFFFFFFULL), .size_bytes = size,
-                        .dsm_pid = make_dsm_pid(G.me, (uint32_t)getpid()), .first_page = start, .num_pages = n };
-    if (alloc_table_add(&a) != DSM_OK) LOG(LOG_WARN, "tabla de asignaciones llena (MAX_ALLOCS)");
-    uint8_t wire[ALLOC_WIRE_LEN]; alloc_wire(wire, &a);
-    for (int i = 0; i < G.n_nodes; i++)
-        if (i != G.me) send_msg_node(i, MSG_ALLOC_COMMIT, 0, 0, start, DSM_OK, wire, sizeof wire, NULL, 0);
-    pager_update_self_free();
-    *out = app_addr(start);
-    return DSM_OK;
+    alloc_home_commit(a.alloc_id);
 }

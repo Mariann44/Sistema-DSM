@@ -1,8 +1,8 @@
 CC ?= gcc
 CFLAGS ?= -O2 -g -Wall -Wextra -pthread -Iinclude -Isrc
-SRC := src/config.c src/net.c src/membership.c src/heartbeat.c src/sync.c src/pager.c src/ctl.c src/dsm.c
+SRC := src/config.c src/net.c src/membership.c src/heartbeat.c src/sync.c src/pager.c src/alloc.c src/ctl.c src/dsm.c
 OBJ := $(SRC:.c=.o)
-APPS := apps/hello_dsm apps/idle_dsm apps/counter
+APPS := apps/hello_dsm apps/idle_dsm apps/counter apps/alloc_test
 TOOLS := tools/dsmctl
 
 all: libdsm.a $(APPS) $(TOOLS)
@@ -20,6 +20,8 @@ test-hb: all
 	./tests/run_heartbeat.sh
 test-lock: all
 	./tests/run_counter.sh 3 300
+test-alloc: all
+	./tests/run_alloc.sh 3
 clean:
 	rm -f src/*.o libdsm.a $(APPS) $(TOOLS)
-.PHONY: all test test-hb test-lock clean
+.PHONY: all test test-hb test-lock test-alloc clean

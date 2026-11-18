@@ -41,7 +41,7 @@ int dsm_finalize(void) {
 int dsm_alloc(size_t size, void **out) {
     if (!G.inited) return DSM_E_NOT_INIT;
     if (!out || !size) return DSM_E_INVAL;
-    return pager_alloc(size, out);
+    return alloc_distributed(size, out);
 }
 int dsm_free(void *ptr) { (void)ptr; return DSM_E_NOT_IMPL; }
 void *dsm_root(void) { return G.inited ? (void *)G.app : NULL; }

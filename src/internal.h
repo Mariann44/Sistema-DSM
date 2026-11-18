@@ -20,11 +20,12 @@
 #define MAX_HOSTS      32
 #define MAX_ALLOCS     4096
 #define DF_ALLOCATED 0x02
+#define DF_RESERVED  0x04  /* reservada por un ALLOC_REQUEST, a la espera de COMMIT o ABORT */
 
 enum { LOG_ERROR = 0, LOG_WARN, LOG_INFO, LOG_DEBUG };
 enum { N_UNUSED = 0, N_JOINING, N_ALIVE, N_SUSPECT, N_DOWN, N_LEFT };
 enum { PG_I = 0, PG_S, PG_M, PG_PR, PG_PW };
-enum { W_PAGE = 1, W_INVAL, W_FETCH, W_JOIN, W_LOCK, W_STATS, W_PAGES, W_BARRIER };
+enum { W_PAGE = 1, W_INVAL, W_FETCH, W_JOIN, W_LOCK, W_STATS, W_PAGES, W_BARRIER, W_ALLOC };
 
 typedef struct {
     uint32_t page_size, node_mem_mb, max_global_mb;
@@ -103,9 +104,10 @@ typedef struct {
     waiter_t waiters[MAX_WAITERS]; pthread_mutex_t waiters_mx; _Atomic uint32_t next_rid;
     pthread_t listener_th, svc_th[32], hb_th, ctl_th; volatile int hb_running, ctl_running;
     int ctl_listen_fd;
-    uint32_t slice_first, slice_num, alloc_next;
-    pthread_mutex_t alloc_mx;
-    uint64_t alloc_counter;                         /* protegido por alloc_mx */
+    uint32_t slice_first, slice_num;
+    pthread_mutex_t alloc_mx;                       /* reservas del home, slice_free y alloc_counter */
+    uint32_t slice_free;                            /* páginas del slice propio sin asignar ni reservar */
+    uint64_t alloc_counter;
     alloc_entry_t allocs[MAX_ALLOCS]; int n_allocs; pthread_rwlock_t allocs_rw;
     stats_t st;
 } dsm_ctx_t;
@@ -164,7 +166,6 @@ void pager_on_invalidate(const msg_header_t *h);
 void pager_serve_request(const msg_header_t *h);
 void pager_serve_pages_request(const msg_header_t *h);
 uint32_t pager_collect_pages(uint8_t *buf, uint32_t cap);
-int pager_alloc(size_t size, void **out);
 uint32_t pager_free_pages(void);
 void pager_update_self_free(void);
 /* tabla de asignaciones replicada (pager.c) */
@@ -176,4 +177,10 @@ int  alloc_table_find(uint32_t page, alloc_entry_t *out);
 int  alloc_table_snapshot(alloc_entry_t *out, int cap);
 void alloc_table_remove_node(uint16_t node);
 void pager_on_alloc_commit(const uint8_t *pl, uint32_t len);
+/* alloc.c: asignación distribuida en dos fases (ALLOC_REQUEST/REPLY/COMMIT/ABORT) */
+int  alloc_distributed(size_t size, void **out);
+void alloc_on_request(const msg_header_t *h, const uint8_t *pl, uint32_t len);
+void alloc_on_abort(const uint8_t *pl, uint32_t len);
+void alloc_home_commit(uint64_t alloc_id);
+void alloc_node_down(int node);
 #endif

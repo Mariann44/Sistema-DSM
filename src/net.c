@@ -164,7 +164,10 @@ static void dispatch(int fd, msg_header_t *h, uint8_t *pl) {
     case MSG_JOIN_ACK: membership_on_join_ack(fd, h, pl, len); waiter_complete(h, pl, len); break;
     case MSG_NODE_JOINED: membership_on_node_joined(pl, len); break;
     case MSG_NODE_LEAVE: membership_on_leave(h->src_node); break;
+    case MSG_ALLOC_REQUEST: alloc_on_request(h, pl, len); break;    /* hoja: reserva con alloc_mx, nunca espera */
+    case MSG_ALLOC_REPLY: waiter_complete(h, pl, len); break;
     case MSG_ALLOC_COMMIT: pager_on_alloc_commit(pl, len); break;   /* hoja: registra la asignación */
+    case MSG_ALLOC_ABORT: alloc_on_abort(pl, len); break;
     case MSG_PAGE_DATA: pager_on_page_data(h, pl, len); break;
     case MSG_PAGE_FETCH: pager_on_fetch(h); break;
     case MSG_INVALIDATE: pager_on_invalidate(h); break;

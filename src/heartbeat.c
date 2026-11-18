@@ -128,7 +128,7 @@ static void check_timeouts(void) {
         if (suspect) LOG(LOG_WARN, "nodo %d sin latidos hace %llu ms: ALIVE -> SUSPECT", i, (unsigned long long)since);
         if (down) {
             LOG(LOG_WARN, "nodo %d sin latidos hace %llu ms: -> DOWN (sus páginas quedan no disponibles)", i, (unsigned long long)since);
-            waiter_fail_node(i); sync_node_down(i);
+            waiter_fail_node(i); sync_node_down(i); alloc_node_down(i);
         }
     }
 }

@@ -242,7 +242,7 @@ void membership_on_leave(int src) {
     if (src >= MAX_NODES_HARD) return;
     pthread_mutex_lock(&G.nodes_mx); G.nodes[src].state = N_LEFT; pthread_mutex_unlock(&G.nodes_mx);
     alloc_table_remove_node(src);                /* dsm_finalize libera sus asignaciones */
-    waiter_fail_node(src); sync_node_down(src);
+    waiter_fail_node(src); sync_node_down(src); alloc_node_down(src);
     LOG(LOG_INFO, "nodo %d salió del clúster", src);
 }
 void membership_on_conn_closed(int fd) {
@@ -255,7 +255,7 @@ void membership_on_conn_closed(int fd) {
             dead = i; break;
         }
     pthread_mutex_unlock(&G.nodes_mx);
-    if (dead >= 0) { LOG(LOG_WARN, "conexión con el nodo %d cerrada", dead); waiter_fail_node(dead); sync_node_down(dead); }
+    if (dead >= 0) { LOG(LOG_WARN, "conexión con el nodo %d cerrada", dead); waiter_fail_node(dead); sync_node_down(dead); alloc_node_down(dead); }
 }
 void membership_broadcast(int type) {
     for (int i = 0; i < G.n_nodes; i++) if (i != G.me) send_msg_node(i, type, 0, 0, 0, DSM_OK, NULL, 0, NULL, 0);
