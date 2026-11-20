@@ -30,7 +30,7 @@ int dsm_init(const char *config_path) {
 
 int dsm_finalize(void) {
     if (!G.inited) return DSM_E_NOT_INIT;
-    /* TODO: PAGE_WRITEBACK de las páginas remotas en M antes de salir. */
+    pager_writeback_all();   /* PAGE_WRITEBACK: las páginas remotas en M vuelven a su home */
     membership_broadcast(MSG_NODE_LEAVE);
     usleep(100000);
     ctl_stop(); heartbeat_stop(); net_stop(); pager_shutdown();

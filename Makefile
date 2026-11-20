@@ -2,7 +2,7 @@ CC ?= gcc
 CFLAGS ?= -O2 -g -Wall -Wextra -pthread -Iinclude -Isrc
 SRC := src/config.c src/net.c src/membership.c src/heartbeat.c src/sync.c src/pager.c src/alloc.c src/ctl.c src/dsm.c
 OBJ := $(SRC:.c=.o)
-APPS := apps/hello_dsm apps/idle_dsm apps/counter apps/alloc_test
+APPS := apps/hello_dsm apps/idle_dsm apps/counter apps/alloc_test apps/cache_test
 GEMM := apps/gemm/gemm_dsm apps/gemm/gemm_serial
 # Dataset de la versión serial de referencia (MINI, SMALL, MEDIUM, LARGE o EXTRALARGE)
 GEMM_DATASET ?= MEDIUM_DATASET
@@ -41,10 +41,12 @@ test-lock: all
 	./tests/run_counter.sh 3 300
 test-alloc: all
 	./tests/run_alloc.sh 3
+test-cache: all
+	./tests/run_cache.sh
 test-gemm: all
 	./tests/run_gemm.sh 3 2
 test-sobel: all
 	./tests/run_sobel.sh 3 2
 clean:
 	rm -f src/*.o apps/sobel/*.o libdsm.a $(APPS) $(GEMM) $(SOBEL) $(TOOLS)
-.PHONY: all test test-hb test-lock test-alloc test-gemm test-sobel clean
+.PHONY: all test test-hb test-lock test-alloc test-cache test-gemm test-sobel clean

@@ -1,7 +1,11 @@
 /* tools/dsmctl.c - herramienta de línea de comandos para consultar un nodo DSM.
  * Uso:
- *   dsmctl <ip> <slot> <comando> [argumento]
- *   dsmctl <ip> <slot> [conf_path] <comando>
+ *   dsmctl [-c dsm.conf] <ip> <slot> <comando> [argumento]
+ *   dsmctl <ip> <slot> <dsm.conf> <comando> [argumento]
+ *
+ * El archivo de configuración solo se usa para leer PORT_BASE (el puerto de control es
+ * PORT_BASE + 4 * slot + 2). Si no se indica, se usa la variable DSM_CONF, luego
+ * conf/dsm_local.conf o dsm.conf del directorio actual y, si no hay ninguno, 27100.
  *
  * Ejemplo:
  *   dsmctl 127.0.0.1 0 nodes
@@ -40,9 +44,24 @@ static int parse_port_base_from_conf(const char *path) {
     return base;
 }
 
+static int is_conf_file(const char *s) {
+    size_t n = strlen(s);
+    return n > 5 && strcmp(s + n - 5, ".conf") == 0 && access(s, R_OK) == 0;
+}
+
 int main(int argc, char **argv) {
+    const char *conf = getenv("DSM_CONF");
+    if (argc >= 3 && strcmp(argv[1], "-c") == 0) {           /* dsmctl -c dsm.conf <ip> <slot> ... */
+        conf = argv[2];
+        argv[2] = argv[0]; argv += 2; argc -= 2;
+    } else if (argc >= 5 && is_conf_file(argv[3])) {          /* dsmctl <ip> <slot> dsm.conf <comando> */
+        conf = argv[3];
+        for (int i = 3; i < argc - 1; i++) argv[i] = argv[i + 1];
+        argc--;
+    }
+    if (conf && access(conf, R_OK) != 0) { fprintf(stderr, "Error: no se puede leer %s\n", conf); return 1; }
     if (argc < 4) {
-        fprintf(stderr, "Uso: %s <ip> <slot> <comando> [argumentos...]\n", argv[0]);
+        fprintf(stderr, "Uso: %s [-c dsm.conf] <ip> <slot> <comando> [argumentos...]\n", argv[0]);
         fprintf(stderr, "Comandos disponibles:\n");
         fprintf(stderr, "  nodes\n");
         fprintf(stderr, "  stats [local|global]\n");
@@ -58,9 +77,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Revisar si existe conf/dsm_local.conf o dsm.conf para tomar PORT_BASE si está configurado */
+    /* PORT_BASE: del archivo indicado (-c, posicional o DSM_CONF) o de los archivos por omisión */
     int port_base = DEFAULT_PORT_BASE;
-    if (access("conf/dsm_local.conf", R_OK) == 0) {
+    if (conf) {
+        port_base = parse_port_base_from_conf(conf);
+    } else if (access("conf/dsm_local.conf", R_OK) == 0) {
         port_base = parse_port_base_from_conf("conf/dsm_local.conf");
     } else if (access("dsm.conf", R_OK) == 0) {
         port_base = parse_port_base_from_conf("dsm.conf");

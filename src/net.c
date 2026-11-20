@@ -8,7 +8,7 @@
 #include <sys/socket.h>
 
 #define MAX_CONNS 160
-#define QCAP 256
+#define QCAP 1024
 
 /* ---------- envío ---------- */
 int send_msg_fd(int fd, pthread_mutex_t *mx, int type, int flags, uint32_t rid, uint32_t page,
@@ -93,7 +93,7 @@ void waiter_complete(const msg_header_t *h, const uint8_t *pl, uint32_t len) {
         if (!w->pending_acks) break;                 /* ya se completó (o falló): se ignora */
         if (h->status != DSM_OK) w->status = h->status;
         if (w->reply_buf && len) { w->reply_len = len < w->reply_cap ? len : w->reply_cap; memcpy(w->reply_buf, pl, w->reply_len); }
-        if (h->type == MSG_INVALIDATE_ACK && w->pending_acks > 1) w->pending_acks--;
+        if ((h->type == MSG_INVALIDATE_ACK || h->type == MSG_WRITEBACK_ACK) && w->pending_acks > 1) w->pending_acks--;
         else { w->pending_acks = 0; sem_post(&w->sem); }
         break;
     }
@@ -133,6 +133,7 @@ static void *svc_main(void *arg) {
         if (it.h.type == MSG_PAGE_REQUEST) pager_serve_request(&it.h);
         else if (it.h.type == MSG_PAGES_REQUEST) pager_serve_pages_request(&it.h);
         else if (it.h.type == MSG_JOIN_REQUEST) membership_serve_join(it.fd, &it.h, it.pl);
+        else if (it.h.type == MSG_PAGE_WRITEBACK) pager_serve_writeback(&it.h, it.pl, it.h.payload_len);
         free(it.pl);
     }
 }
@@ -160,7 +161,7 @@ static void dispatch(int fd, msg_header_t *h, uint8_t *pl) {
         }
         break;
     case MSG_HEARTBEAT: break; /* los latidos llegan por HB_PORT (heartbeat.c), no por esta conexión */
-    case MSG_JOIN_REQUEST: case MSG_PAGE_REQUEST: case MSG_PAGES_REQUEST: enqueue(h, pl, fd); own = 0; break;
+    case MSG_JOIN_REQUEST: case MSG_PAGE_REQUEST: case MSG_PAGES_REQUEST: case MSG_PAGE_WRITEBACK: enqueue(h, pl, fd); own = 0; break;
     case MSG_JOIN_ACK: membership_on_join_ack(fd, h, pl, len); waiter_complete(h, pl, len); break;
     case MSG_NODE_JOINED: membership_on_node_joined(pl, len); break;
     case MSG_NODE_LEAVE: membership_on_leave(h->src_node); break;
@@ -171,7 +172,7 @@ static void dispatch(int fd, msg_header_t *h, uint8_t *pl) {
     case MSG_PAGE_DATA: pager_on_page_data(h, pl, len); break;
     case MSG_PAGE_FETCH: pager_on_fetch(h); break;
     case MSG_INVALIDATE: pager_on_invalidate(h); break;
-    case MSG_PAGE_FETCH_REPLY: case MSG_INVALIDATE_ACK: case MSG_PAGES_REPLY: waiter_complete(h, pl, len); break;
+    case MSG_PAGE_FETCH_REPLY: case MSG_INVALIDATE_ACK: case MSG_PAGES_REPLY: case MSG_WRITEBACK_ACK: waiter_complete(h, pl, len); break;
     case MSG_LOCK_ACQUIRE: sync_on_acquire(h, pl, len); break;   /* hoja: solo encola o concede */
     case MSG_LOCK_RELEASE: sync_on_release(h, pl, len); break;
     case MSG_LOCK_GRANT: case MSG_BARRIER_RELEASE: waiter_complete(h, pl, len); break;

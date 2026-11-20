@@ -4,6 +4,7 @@ apps/hello_dsm
 apps/idle_dsm
 apps/counter
 apps/alloc_test
+apps/cache_test
 tools/dsmctl
 
 # Compilados y librerías C

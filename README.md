@@ -20,6 +20,7 @@ Proyecto del curso IC-6600 Principios de Sistemas Operativos, TEC, II semestre 2
     make test-lock       # 3 nodos x 300 incrementos de un contador compartido con dsm_lock
     make test-hb         # heartbeat: pausa un nodo y verifica SUSPECT, recuperación y DOWN (~35 s)
     make test-alloc      # asignación que cruza slices, choque de reservas y DSM_E_NOMEM
+    make test-cache      # reemplazo con una caché de 64 páginas y writeback al salir
     make test-gemm       # aplicación 1: multiplicación de matrices, comparada con PolyBench serial
     make test-sobel      # aplicación 2: filtro Sobel sobre video, comparado con la versión serial
     make clean
@@ -44,6 +45,7 @@ los programas reciben el archivo de configuración y la cantidad de nodos que de
 |---|---|
 | `conf/dsm_local.conf` | Pruebas en una sola máquina: 16 MB por nodo, 256 MB de espacio global |
 | `conf/dsm_gemm.conf` | Escenarios grandes de las dos aplicaciones: 256 MB por nodo, 4 GB de espacio global |
+| `conf/dsm_cache.conf` | Igual que `dsm_local.conf`, con `CACHE_MAX_PAGES=64` para forzar el reemplazo |
 
 Para correr en varias computadoras se reemplaza `NODE=127.0.0.1` por una línea `NODE=<ip>` por
 máquina; la primera es la fundadora. Todos los nodos deben usar el mismo archivo. Las claves y sus
@@ -51,7 +53,11 @@ rangos están documentados en el Entregable 1.
 
 ### Consultas (`dsmctl`)
 
-    ./tools/dsmctl <ip> <slot> <comando> [argumento]
+    ./tools/dsmctl [-c dsm.conf] <ip> <slot> <comando> [argumento]
+
+El puerto de control es `PORT_BASE + 4 * slot + 2`. `PORT_BASE` se toma del archivo indicado con
+`-c` (o de la variable `DSM_CONF`); si no se indica, de `conf/dsm_local.conf` o `dsm.conf` del
+directorio actual.
 
 | Comando | Muestra |
 |---|---|
@@ -135,7 +141,7 @@ Medidos con 3 nodos en una sola máquina virtual de 2 núcleos, con 2 hilos por 
 | `src/membership.c` | Slot y puertos, JOIN_REQUEST/ACK, NODE_JOINED, `home_of()` |
 | `src/heartbeat.c` | Latidos por `HB_PORT`, estados ALIVE/SUSPECT/DOWN |
 | `src/sync.c` | Locks (LOCK_ACQUIRE/GRANT/RELEASE) y barreras (BARRIER_ENTER/RELEASE) |
-| `src/pager.c` | memfd + 2 vistas, manejador de SIGSEGV, MSI, directorio, PAGE_* e INVALIDATE |
+| `src/pager.c` | memfd + 2 vistas, manejador de SIGSEGV, MSI, directorio, PAGE_* e INVALIDATE, caché y PAGE_WRITEBACK |
 | `src/alloc.c` | `dsm_alloc` distribuida en dos fases (ALLOC_REQUEST/REPLY/COMMIT/ABORT) |
 | `src/ctl.c` | Puerto de control y formato de las consultas |
 | `src/dsm.c` | `dsm_init/finalize/alloc/prefetch/get_stats` y demás funciones del API |
@@ -158,6 +164,12 @@ Medidos con 3 nodos en una sola máquina virtual de 2 núcleos, con 2 hilos por 
   - Si no hay memoria contigua libre en el clúster, retorna `DSM_E_NOMEM`.
   - Una aplicación debe esperar a que todos los nodos se unan (con una barrera) antes de hacer
     asignaciones grandes: antes de eso sus slices no existen.
+- **Caché de páginas remotas (`CACHE_MAX_PAGES`):** las páginas que llegan de otros nodos entran
+  a una cola FIFO. Cuando pasan del límite, se expulsan las más antiguas:
+  - una copia S se descarta sin usar la red;
+  - una página en M se devuelve a su home con PAGE_WRITEBACK y el home vuelve a ser su dueño.
+- **Writeback al salir:** `dsm_finalize` devuelve a su home todas las páginas remotas en M antes de
+  avisar NODE_LEAVE, así que lo escrito por un nodo no se pierde cuando sale.
 - **Heartbeat:** cada nodo envía un HEARTBEAT por segundo al `HB_PORT` de cada vecino, por una
   conexión aparte y con su propio hilo.
   - Sin latidos por `SUSPECT_AFTER_MS`, el vecino pasa a SUSPECT, y vuelve a ALIVE si late de nuevo.
@@ -174,11 +186,10 @@ Medidos con 3 nodos en una sola máquina virtual de 2 núcleos, con 2 hilos por 
 ## Pendiente
 
 1. `dsm_free` (FREE_REQUEST/REPLY/COMMIT). Hoy retorna `DSM_E_NOT_IMPL`.
-2. PAGE_WRITEBACK en `dsm_finalize`: las páginas remotas en M se pierden si su nodo sale primero.
-   Las aplicaciones lo evitan con una barrera final.
-3. Reemplazo de copias remotas por `CACHE_MAX_PAGES` (la clave se lee y valida, pero no se aplica).
-4. Consultas en HTML por `HTTP_PORT` (opcional según la especificación).
-5. Uniones concurrentes en contactos distintos pueden asignar el mismo rango. Por eso los nodos
+2. Las páginas del slice de un nodo que sale (o cae) dejan de estar disponibles, y sus
+   asignaciones no se reutilizan todavía.
+3. Consultas en HTML por `HTTP_PORT` (opcional según la especificación).
+4. Uniones concurrentes en contactos distintos pueden asignar el mismo rango. Por eso los nodos
    se arrancan de a uno.
-6. El listener lee con `recv` bloqueante, así que un par lento podría retrasarlo.
-7. Pruebas en varias computadoras del laboratorio.
+5. El listener lee con `recv` bloqueante, así que un par lento podría retrasarlo.
+6. Pruebas en varias computadoras del laboratorio.

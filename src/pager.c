@@ -28,6 +28,8 @@ static void local_set(uint32_t p, int st) {
     sem_post(plock(p));
 }
 
+static void cache_note(uint32_t p);
+
 /* ---------- home: operaciones del directorio (con dir_locks[p] tomado) ---------- */
 static int fetch_from(uint32_t p, int owner, int inval) {
     if (owner == G.me) { local_set(p, inval ? PG_I : PG_S); return DSM_OK; }
@@ -198,10 +200,144 @@ void pager_on_page_data(const msg_header_t *h, const uint8_t *pl, uint32_t len) 
         if (len >= 4) lp->version = get32(pl);
         lp->state = (h->flags & F_WRITE) ? PG_M : PG_S;
         mprotect(app_addr(p), ps, prot_of(lp->state));
+        cache_note(p);
         if (h->flags & F_HAS_DATA) atomic_fetch_add(&G.st.pages_received, 1);
     }
     sem_post(plock(p));
     waiter_complete(h, NULL, 0); /* despierta al hilo que falló */
+}
+
+/* ---------- caché de páginas remotas (CACHE_MAX_PAGES) y PAGE_WRITEBACK ----------
+ * Cada página remota que llega (PAGE_DATA) entra al final de una cola FIFO. Cuando la cola supera
+ * CACHE_MAX_PAGES, el hilo que acaba de resolver un fallo expulsa las más antiguas:
+ *   - una copia S se descarta sin red (el home la sigue teniendo en el copyset; una invalidación
+ *     futura sobre una página en I solo se confirma);
+ *   - una página en M se devuelve a su home con PAGE_WRITEBACK, y el home vuelve a ser su dueño.
+ * Mientras dura el writeback la página queda en PW, así que un fallo sobre ella espera igual que
+ * con una solicitud en curso. dsm_finalize usa el mismo writeback para todas sus páginas M remotas. */
+#define WB_BATCH 32
+typedef struct { uint32_t page, seq; } cache_ent_t;
+static cache_ent_t *cring; static uint32_t c_cap, c_head, c_count, c_seq;
+static pthread_mutex_t c_mx = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic uint64_t n_evict_s, n_evict_m, n_wb_finalize, n_wb_received;
+
+/* Con plock(p) tomado. */
+static void cache_note(uint32_t p) {
+    pthread_mutex_lock(&c_mx);
+    uint32_t seq = ++c_seq;
+    if (cring && c_count < c_cap) { cring[(c_head + c_count++) % c_cap] = (cache_ent_t){ p, seq }; G.pages[p].cache_seq = seq; }
+    pthread_mutex_unlock(&c_mx);
+}
+
+static int node_usable(int n) {
+    pthread_mutex_lock(&G.nodes_mx);
+    int st = (n >= 0 && n < G.n_nodes) ? G.nodes[n].state : N_UNUSED;
+    pthread_mutex_unlock(&G.nodes_mx);
+    return st == N_ALIVE || st == N_SUSPECT;
+}
+
+/* Devuelve a su home las páginas de pg[] (ya en PW y con PROT_NONE). Agrupa por home y espera un
+ * WRITEBACK_ACK por página. Al terminar, las páginas que siguen en PW pasan a I. */
+static int writeback_pages(const uint32_t *pg, int n) {
+    int done = 0, lost = 0;
+    uint8_t sent[WB_BATCH] = { 0 };
+    for (int i = 0; i < n; i++) {
+        if (sent[i]) continue;
+        int home = home_of(pg[i]), k = 0;
+        for (int j = i; j < n; j++) if (!sent[j] && home_of(pg[j]) == home) k++;
+        waiter_t *w = node_usable(home) ? waiter_get(W_WB, home, pg[i], NULL, 0, k) : NULL;
+        for (int j = i; j < n; j++) {
+            if (sent[j] || home_of(pg[j]) != home) continue;
+            sent[j] = 1;
+            if (!w) { lost++; continue; }
+            if (send_msg_node(home, MSG_PAGE_WRITEBACK, F_HAS_DATA, w->request_id, pg[j], DSM_OK,
+                              NULL, 0, sys_addr(pg[j]), G.cfg.page_size) != DSM_OK) {
+                msg_header_t fake = { .type = MSG_WRITEBACK_ACK, .request_id = w->request_id, .status = DSM_E_NODE_DOWN };
+                waiter_complete(&fake, NULL, 0);
+            }
+        }
+        if (w) {
+            int rc = waiter_wait(w, G.cfg.request_timeout_ms * 2);
+            if (rc == DSM_OK) rc = w->status;
+            waiter_put(w);
+            if (rc == DSM_OK) done += k;
+            else { lost += k; LOG(LOG_WARN, "writeback de %d páginas al nodo %d: %s", k, home, dsm_strerror(rc)); }
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        sem_wait(plock(pg[i]));
+        if (G.pages[pg[i]].state == PG_PW) G.pages[pg[i]].state = PG_I;
+        sem_post(plock(pg[i]));
+    }
+    if (lost) LOG(LOG_WARN, "%d páginas modificadas no se pudieron devolver a su home", lost);
+    return done;
+}
+
+/* Marca p para writeback si es una página remota en M. Devuelve 1 si la marcó. */
+static int take_for_writeback(uint32_t p) {
+    local_page_t *lp = &G.pages[p];
+    if (lp->state != PG_M || home_of(p) == G.me) return 0;
+    mprotect(app_addr(p), G.cfg.page_size, PROT_NONE);   /* primero bloquea escrituras */
+    lp->state = PG_PW;
+    return 1;
+}
+
+static void cache_evict(void) {
+    uint32_t wb[WB_BATCH]; int nwb = 0;
+    for (int k = 0; k < 4 * WB_BATCH; k++) {
+        pthread_mutex_lock(&c_mx);
+        if (c_count <= G.cfg.cache_max_pages) { pthread_mutex_unlock(&c_mx); break; }
+        cache_ent_t e = cring[c_head]; c_head = (c_head + 1) % c_cap; c_count--;
+        pthread_mutex_unlock(&c_mx);
+        uint32_t p = e.page;
+        sem_wait(plock(p));
+        local_page_t *lp = &G.pages[p];
+        if (lp->cache_seq == e.seq && home_of(p) != G.me) {   /* entrada vigente (no reemplazada por otra llegada) */
+            if (lp->state == PG_S) { mprotect(app_addr(p), G.cfg.page_size, PROT_NONE); lp->state = PG_I; atomic_fetch_add(&n_evict_s, 1); }
+            else if (take_for_writeback(p)) { wb[nwb++] = p; atomic_fetch_add(&n_evict_m, 1); }
+        }
+        sem_post(plock(p));
+        if (nwb == WB_BATCH) { writeback_pages(wb, nwb); nwb = 0; }
+    }
+    if (nwb) writeback_pages(wb, nwb);
+}
+
+/* dsm_finalize: todas las páginas remotas en M vuelven a su home antes de salir. */
+void pager_writeback_all(void) {
+    uint32_t wb[WB_BATCH]; int nwb = 0; uint64_t total = 0;
+    for (uint32_t p = 0; p < G.max_pages; p++) {
+        if (G.pages[p].state != PG_M) continue;
+        sem_wait(plock(p));
+        int t = take_for_writeback(p);
+        sem_post(plock(p));
+        if (t) wb[nwb++] = p;
+        if (nwb == WB_BATCH) { total += writeback_pages(wb, nwb); nwb = 0; }
+    }
+    if (nwb) total += writeback_pages(wb, nwb);
+    n_wb_finalize += total;
+    LOG(LOG_INFO, "caché: %llu copias S descartadas, %llu páginas M devueltas por reemplazo, %llu devueltas al salir, %llu recibidas como home",
+        (unsigned long long)n_evict_s, (unsigned long long)n_evict_m, (unsigned long long)total, (unsigned long long)n_wb_received);
+}
+
+/* PAGE_WRITEBACK en el home (hilo de servicio: toma dlock, que puede estar ocupado esperando red). */
+void pager_serve_writeback(const msg_header_t *h, const uint8_t *pl, uint32_t len) {
+    uint32_t p = h->page_id; uint16_t X = h->src_node; int rc = DSM_OK;
+    if (p >= G.max_pages || home_of(p) != G.me) rc = DSM_E_INVAL;
+    else {
+        sem_wait(dlock(p));
+        dir_entry_t *d = &G.dir[p];
+        if (h->flags & F_HAS_DATA) {
+            /* Si el dueño ya cambió (el home la pidió con FETCH mientras tanto), el writeback es viejo y se ignora. */
+            if (len >= G.cfg.page_size && d->owner == X) {
+                memcpy(sys_addr(p), pl, G.cfg.page_size);
+                d->owner = G.me; d->copyset = 0;
+                local_set(p, PG_M);
+                atomic_fetch_add(&n_wb_received, 1);
+            }
+        } else d->copyset &= ~(1ULL << X);
+        sem_post(dlock(p));
+    }
+    send_msg_node(X, MSG_WRITEBACK_ACK, 0, h->request_id, p, rc, NULL, 0, NULL, 0);
 }
 
 /* ---------- lado que falla ---------- */
@@ -248,6 +384,7 @@ static void fault_page(uint32_t p, int write) {
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
     atomic_fetch_add(&G.st.fault_us, (t1.tv_sec - t0.tv_sec) * 1000000ULL + (t1.tv_nsec - t0.tv_nsec) / 1000);
+    if (__atomic_load_n(&c_count, __ATOMIC_RELAXED) > G.cfg.cache_max_pages) cache_evict();
 }
 
 static void segv_handler(int sig, siginfo_t *si, void *uc) {
@@ -276,6 +413,9 @@ int pager_init(void) {
     G.pages = calloc(G.max_pages, sizeof(local_page_t)); G.dir = calloc(G.max_pages, sizeof(dir_entry_t));
     if (!G.pages || !G.dir) return DSM_E_NOMEM;
     for (uint32_t i = 0; i < N_LOCKS; i++) { sem_init(&G.page_locks[i], 0, 1); sem_init(&G.dir_locks[i], 0, 1); }
+    c_cap = c->cache_max_pages * 2 + 1024; c_head = c_count = c_seq = 0;
+    cring = calloc(c_cap, sizeof *cring);
+    if (!cring) return DSM_E_NOMEM;
     struct sigaction sa; memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = segv_handler; sa.sa_flags = SA_SIGINFO; sigemptyset(&sa.sa_mask);
     return sigaction(SIGSEGV, &sa, NULL) == 0 ? DSM_OK : DSM_E_MMAP;
@@ -299,6 +439,7 @@ void pager_init_slice(uint32_t first, uint32_t num) {
 void pager_shutdown(void) {
     munmap(G.app, G.span); munmap(G.sys, G.span); close(G.memfd);
     free(G.pages); free(G.dir); G.pages = NULL; G.dir = NULL;
+    free(cring); cring = NULL;
 }
 
 /* ---------- páginas libres del slice propio ---------- */
