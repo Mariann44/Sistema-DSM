@@ -27,3 +27,8 @@ Thumbs.db
 # Binarios de la aplicacion gemm
 apps/gemm/gemm_dsm
 apps/gemm/gemm_serial
+
+# Binarios de la aplicacion sobel y videos de prueba
+apps/sobel/sobel_dsm
+apps/sobel/sobel_serial
+data/
