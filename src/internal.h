@@ -25,7 +25,7 @@
 enum { LOG_ERROR = 0, LOG_WARN, LOG_INFO, LOG_DEBUG };
 enum { N_UNUSED = 0, N_JOINING, N_ALIVE, N_SUSPECT, N_DOWN, N_LEFT };
 enum { PG_I = 0, PG_S, PG_M, PG_PR, PG_PW };
-enum { W_PAGE = 1, W_INVAL, W_FETCH, W_JOIN, W_LOCK, W_STATS, W_PAGES, W_BARRIER, W_ALLOC, W_WB };
+enum { W_PAGE = 1, W_INVAL, W_FETCH, W_JOIN, W_LOCK, W_STATS, W_PAGES, W_BARRIER, W_ALLOC, W_WB, W_FREE };
 
 typedef struct {
     uint32_t page_size, node_mem_mb, max_global_mb;
@@ -179,10 +179,16 @@ void alloc_table_remove_node(uint16_t node);
 void pager_on_alloc_commit(const uint8_t *pl, uint32_t len);
 void pager_serve_writeback(const msg_header_t *h, const uint8_t *pl, uint32_t len);
 void pager_writeback_all(void);
+uint32_t pager_reclaim(uint32_t first, uint32_t num);
+void pager_wait_reclaim(void);
+int alloc_table_remove(uint64_t alloc_id);
 /* alloc.c: asignación distribuida en dos fases (ALLOC_REQUEST/REPLY/COMMIT/ABORT) */
 int  alloc_distributed(size_t size, void **out);
 void alloc_on_request(const msg_header_t *h, const uint8_t *pl, uint32_t len);
 void alloc_on_abort(const uint8_t *pl, uint32_t len);
 void alloc_home_commit(uint64_t alloc_id);
 void alloc_node_down(int node);
+int  alloc_free(void *ptr);
+void alloc_serve_free(const msg_header_t *h, const uint8_t *pl, uint32_t len);
+void alloc_on_free_commit(const uint8_t *pl, uint32_t len);
 #endif

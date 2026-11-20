@@ -134,6 +134,7 @@ static void *svc_main(void *arg) {
         else if (it.h.type == MSG_PAGES_REQUEST) pager_serve_pages_request(&it.h);
         else if (it.h.type == MSG_JOIN_REQUEST) membership_serve_join(it.fd, &it.h, it.pl);
         else if (it.h.type == MSG_PAGE_WRITEBACK) pager_serve_writeback(&it.h, it.pl, it.h.payload_len);
+        else if (it.h.type == MSG_FREE_REQUEST) alloc_serve_free(&it.h, it.pl, it.h.payload_len);
         free(it.pl);
     }
 }
@@ -161,7 +162,7 @@ static void dispatch(int fd, msg_header_t *h, uint8_t *pl) {
         }
         break;
     case MSG_HEARTBEAT: break; /* los latidos llegan por HB_PORT (heartbeat.c), no por esta conexión */
-    case MSG_JOIN_REQUEST: case MSG_PAGE_REQUEST: case MSG_PAGES_REQUEST: case MSG_PAGE_WRITEBACK: enqueue(h, pl, fd); own = 0; break;
+    case MSG_JOIN_REQUEST: case MSG_PAGE_REQUEST: case MSG_PAGES_REQUEST: case MSG_PAGE_WRITEBACK: case MSG_FREE_REQUEST: enqueue(h, pl, fd); own = 0; break;
     case MSG_JOIN_ACK: membership_on_join_ack(fd, h, pl, len); waiter_complete(h, pl, len); break;
     case MSG_NODE_JOINED: membership_on_node_joined(pl, len); break;
     case MSG_NODE_LEAVE: membership_on_leave(h->src_node); break;
@@ -169,6 +170,8 @@ static void dispatch(int fd, msg_header_t *h, uint8_t *pl) {
     case MSG_ALLOC_REPLY: waiter_complete(h, pl, len); break;
     case MSG_ALLOC_COMMIT: pager_on_alloc_commit(pl, len); break;   /* hoja: registra la asignación */
     case MSG_ALLOC_ABORT: alloc_on_abort(pl, len); break;
+    case MSG_FREE_REPLY: waiter_complete(h, pl, len); break;
+    case MSG_FREE_COMMIT: alloc_on_free_commit(pl, len); break;   /* hoja: solo quita la entrada */
     case MSG_PAGE_DATA: pager_on_page_data(h, pl, len); break;
     case MSG_PAGE_FETCH: pager_on_fetch(h); break;
     case MSG_INVALIDATE: pager_on_invalidate(h); break;

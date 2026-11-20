@@ -9,7 +9,10 @@
  * Fase 3: todos los nodos piden 2 bloques de 1 MB al mismo tiempo.
  *         En las fases 2 y 3 el nodo 0 revisa que ningún bloque se traslape con otro y que cada
  *         página tenga la marca de quien la pidió.
- * Fase 4: una asignación más grande que toda la memoria libre debe fallar con DSM_E_NOMEM. */
+ * Fase 4: una asignación más grande que toda la memoria libre debe fallar con DSM_E_NOMEM.
+ * Fase 5: el nodo 1 libera su asignación grande con dsm_free (los errores de uso se revisan:
+ *         doble liberación, puntero que no es el inicio, asignación de otro nodo). Después el
+ *         nodo 2 pide el mismo tamaño, que solo cabe si la memoria se recuperó, y la recibe en cero. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -24,6 +27,7 @@ typedef struct {
     dsm_barrier_t bar;
     uint64_t big_ptr, big_size;
     uint64_t half[2], half_size;
+    uint64_t again;
     uint64_t blk[MAXN][K];
 } root_t;
 
@@ -123,6 +127,43 @@ int main(int argc, char **argv) {
         rc = dsm_alloc(huge, &p);
         printf("[nodo 2] fase 4: dsm_alloc(%zu MB) -> %s %s\n", huge >> 20, dsm_strerror(rc), rc == DSM_E_NOMEM ? "OK" : "FALLO");
         if (rc != DSM_E_NOMEM) fails++;
+    }
+    dsm_barrier(&r->bar, n);
+
+    /* ---- fase 5: dsm_free y reutilización ---- */
+    if (me == 1 && r->big_ptr) {
+        void *big = (void *)(uintptr_t)r->big_ptr;
+        int e1 = dsm_free((char *)big + ps), e2 = dsm_free(big), e3 = dsm_free(big);
+        int ok = e1 == DSM_E_INVAL && e2 == DSM_OK && e3 == DSM_E_INVAL;
+        printf("[nodo 1] fase 5: dsm_free(mitad)=%s, dsm_free(inicio)=%s, de nuevo=%s %s\n",
+               dsm_strerror(e1), dsm_strerror(e2), dsm_strerror(e3), ok ? "OK" : "FALLO");
+        if (!ok) fails++;
+    }
+    if (me == 0 && r->blk[1][0]) {
+        int e = dsm_free((void *)(uintptr_t)r->blk[1][0]);
+        printf("[nodo 0] fase 5: dsm_free de un bloque del nodo 1 -> %s %s\n", dsm_strerror(e), e == DSM_E_PERM ? "OK" : "FALLO");
+        if (e != DSM_E_PERM) fails++;
+    }
+    dsm_barrier(&r->bar, n);
+    if (me == 2 && r->big_size) {
+        void *p;
+        if ((rc = dsm_alloc(r->big_size, &p))) { printf("[nodo 2] fase 5: dsm_alloc(%zu MB) tras liberar: %s FALLO\n", (size_t)(r->big_size >> 20), dsm_strerror(rc)); fails++; }
+        else {
+            uint32_t *w = p; size_t nz = 0;
+            for (size_t i = 0; i < r->big_size / 4; i++) if (w[i]) nz++;
+            for (size_t i = 0; i < r->big_size / 4; i++) w[i] = (uint32_t)i ^ 0x77777777;
+            r->again = (uint64_t)(uintptr_t)p;
+            printf("[nodo 2] fase 5: dsm_alloc(%zu MB) reutilizo la memoria liberada, %zu palabras distintas de cero %s\n",
+                   (size_t)(r->big_size >> 20), nz, nz ? "FALLO" : "OK");
+            if (nz) fails++;
+        }
+    }
+    dsm_barrier(&r->bar, n);
+    if (me == 0 && r->again) {
+        uint32_t *w = (uint32_t *)(uintptr_t)r->again; size_t bad = 0;
+        for (size_t i = 0; i < r->big_size / 4; i++) if (w[i] != ((uint32_t)i ^ 0x77777777)) bad++;
+        printf("[nodo 0] fase 5: memoria reutilizada verificada, %zu palabras incorrectas %s\n", bad, bad ? "FALLO" : "OK");
+        if (bad) fails++;
     }
     dsm_barrier(&r->bar, n);
 

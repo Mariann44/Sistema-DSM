@@ -18,6 +18,7 @@ enum msg_type {
     MSG_PAGE_FETCH_REPLY = 0x13, MSG_INVALIDATE = 0x14, MSG_INVALIDATE_ACK = 0x15,
     MSG_PAGE_WRITEBACK = 0x16, MSG_WRITEBACK_ACK = 0x17,
     MSG_ALLOC_REQUEST = 0x20, MSG_ALLOC_REPLY = 0x21, MSG_ALLOC_COMMIT = 0x22, MSG_ALLOC_ABORT = 0x23,
+    MSG_FREE_REQUEST = 0x24, MSG_FREE_REPLY = 0x25, MSG_FREE_COMMIT = 0x26,
     MSG_LOCK_ACQUIRE = 0x30, MSG_LOCK_GRANT = 0x31, MSG_LOCK_RELEASE = 0x32,
     MSG_STATS_REQUEST = 0x40, MSG_STATS_REPLY = 0x41,
     MSG_PAGES_REQUEST = 0x42, MSG_PAGES_REPLY = 0x43,
@@ -58,6 +59,9 @@ static inline uint64_t get64(const uint8_t *b) { uint64_t v; memcpy(&v, b, 8); r
 #define ALLOC_REQ_LEN  16
 #define ALLOC_CONFLICT_LEN 8
 #define ALLOC_ABORT_LEN 8
+/* FREE_REQUEST (16 B): igual que ALLOC_REQUEST. FREE_COMMIT (8 B): alloc_id u64. */
+#define FREE_REQ_LEN 16
+#define FREE_COMMIT_LEN 8
 #define HEARTBEAT_LEN  16  /* state u8, reserved u8[3], free_pages u32, timestamp_ms u64 */
 #define PAGE_INFO_WIRE_LEN 16 /* page u32, state u8, allocated u8, owner u16, version u32, home u16, reserved u16 */
 #endif

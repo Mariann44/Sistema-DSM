@@ -46,10 +46,34 @@ los programas reciben el archivo de configuración y la cantidad de nodos que de
 | `conf/dsm_local.conf` | Pruebas en una sola máquina: 16 MB por nodo, 256 MB de espacio global |
 | `conf/dsm_gemm.conf` | Escenarios grandes de las dos aplicaciones: 256 MB por nodo, 4 GB de espacio global |
 | `conf/dsm_cache.conf` | Igual que `dsm_local.conf`, con `CACHE_MAX_PAGES=64` para forzar el reemplazo |
+| `conf/dsm_lab.conf` | Plantilla para varias computadoras: 256 MB por nodo, una línea `NODE` por máquina |
 
-Para correr en varias computadoras se reemplaza `NODE=127.0.0.1` por una línea `NODE=<ip>` por
-máquina; la primera es la fundadora. Todos los nodos deben usar el mismo archivo. Las claves y sus
-rangos están documentados en el Entregable 1.
+Las claves y sus rangos están documentados en el Entregable 1.
+
+### Varias computadoras
+
+1. Copiar el repositorio y compilar con `make` en cada máquina.
+2. Editar `conf/dsm_lab.conf`: una línea `NODE=<ip>` por máquina, en el mismo orden en todas. La
+   primera es la fundadora. Todas las máquinas deben usar exactamente el mismo archivo, porque al
+   unirse se compara su `config_hash`.
+3. Abrir en el firewall los puertos TCP `PORT_BASE` a `PORT_BASE + 4 * SLOTS_PER_HOST - 1`
+   (27100 a 27131 con los valores de la plantilla).
+4. Arrancar primero el nodo de la máquina fundadora y después los demás, de a uno. En cada máquina
+   puede haber varios nodos (cada uno toma el siguiente slot libre):
+
+       ./apps/gemm/gemm_dsm conf/dsm_lab.conf 4 -t 2 -n 2048 2048 2048     # en cada nodo
+       ./tools/dsmctl -c conf/dsm_lab.conf 192.168.0.101 0 nodes            # desde cualquier máquina
+
+### Dos máquinas simuladas en un solo Linux
+
+Para probar el tráfico por una interfaz de red real sin tener dos computadoras, `tests/netns_setup.sh`
+crea dos espacios de nombres de red (`hostA` = 10.10.0.1 y `hostB` = 10.10.0.2) unidos por un par
+veth, y `tests/run_twohost.sh` reparte los nodos entre los dos y corre hello, counter, alloc_test,
+cache_test, gemm y sobel. Necesita root:
+
+    sudo tests/netns_setup.sh          # opcional: sudo tests/netns_setup.sh 2ms  (agrega latencia)
+    sudo tests/run_twohost.sh
+    sudo tests/netns_setup.sh borrar
 
 ### Consultas (`dsmctl`)
 
@@ -168,6 +192,11 @@ Medidos con 3 nodos en una sola máquina virtual de 2 núcleos, con 2 hilos por 
   a una cola FIFO. Cuando pasan del límite, se expulsan las más antiguas:
   - una copia S se descarta sin usar la red;
   - una página en M se devuelve a su home con PAGE_WRITEBACK y el home vuelve a ser su dueño.
+- **`dsm_free`:** solo el nodo que hizo la asignación puede liberarla, y el puntero debe ser su
+  inicio (si no, `DSM_E_PERM` o `DSM_E_INVAL`). Cada home involucrado recibe FREE_REQUEST, revoca
+  las copias de sus páginas, las pone en cero y las vuelve a contar como libres. FREE_COMMIT quita
+  la asignación de la tabla de todos los nodos. Cuando un nodo sale, cada home recupera de la
+  misma forma las páginas de las asignaciones de ese nodo.
 - **Writeback al salir:** `dsm_finalize` devuelve a su home todas las páginas remotas en M antes de
   avisar NODE_LEAVE, así que lo escrito por un nodo no se pierde cuando sale.
 - **Heartbeat:** cada nodo envía un HEARTBEAT por segundo al `HB_PORT` de cada vecino, por una
@@ -185,11 +214,11 @@ Medidos con 3 nodos en una sola máquina virtual de 2 núcleos, con 2 hilos por 
 
 ## Pendiente
 
-1. `dsm_free` (FREE_REQUEST/REPLY/COMMIT). Hoy retorna `DSM_E_NOT_IMPL`.
-2. Las páginas del slice de un nodo que sale (o cae) dejan de estar disponibles, y sus
-   asignaciones no se reutilizan todavía.
-3. Consultas en HTML por `HTTP_PORT` (opcional según la especificación).
-4. Uniones concurrentes en contactos distintos pueden asignar el mismo rango. Por eso los nodos
+1. Las páginas del slice de un nodo que sale (o cae) dejan de estar disponibles. Las asignaciones
+   de un nodo que cae sin `dsm_finalize` (DOWN) no se recuperan.
+2. Consultas en HTML por `HTTP_PORT` (opcional según la especificación).
+3. Uniones concurrentes en contactos distintos pueden asignar el mismo rango. Por eso los nodos
    se arrancan de a uno.
-5. El listener lee con `recv` bloqueante, así que un par lento podría retrasarlo.
-6. Pruebas en varias computadoras del laboratorio.
+4. El listener lee con `recv` bloqueante, así que un par lento podría retrasarlo.
+5. Pruebas en las computadoras del laboratorio. Ya se probó con dos máquinas simuladas
+   (`tests/run_twohost.sh`), pero no en máquinas físicas distintas.

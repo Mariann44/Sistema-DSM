@@ -33,6 +33,7 @@ int dsm_finalize(void) {
     pager_writeback_all();   /* PAGE_WRITEBACK: las páginas remotas en M vuelven a su home */
     membership_broadcast(MSG_NODE_LEAVE);
     usleep(100000);
+    pager_wait_reclaim();    /* recuperaciones de nodos que salieron antes y aún corren */
     ctl_stop(); heartbeat_stop(); net_stop(); pager_shutdown();
     G.inited = 0;
     return DSM_OK;
@@ -43,7 +44,10 @@ int dsm_alloc(size_t size, void **out) {
     if (!out || !size) return DSM_E_INVAL;
     return alloc_distributed(size, out);
 }
-int dsm_free(void *ptr) { (void)ptr; return DSM_E_NOT_IMPL; }
+int dsm_free(void *ptr) {
+    if (!G.inited) return DSM_E_NOT_INIT;
+    return alloc_free(ptr);
+}
 void *dsm_root(void) { return G.inited ? (void *)G.app : NULL; }
 
 int dsm_prefetch(void *ptr, size_t len, int for_write) {

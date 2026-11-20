@@ -505,16 +505,6 @@ int alloc_table_snapshot(alloc_entry_t *out, int cap) {
     return n;
 }
 
-/* NODE_LEAVE: dsm_finalize libera las asignaciones del proceso que sale. */
-void alloc_table_remove_node(uint16_t node) {
-    pthread_rwlock_wrlock(&G.allocs_rw);
-    int j = 0;
-    for (int i = 0; i < G.n_allocs; i++)
-        if ((uint16_t)(G.allocs[i].alloc_id >> 48) != node) G.allocs[j++] = G.allocs[i];
-    G.n_allocs = j;
-    pthread_rwlock_unlock(&G.allocs_rw);
-}
-
 /* ALLOC_COMMIT (hoja): registra la asignación difundida por el nodo que asignó. Si este nodo es
  * home de algún tramo, además convierte su reserva en asignación (alloc.c). */
 void pager_on_alloc_commit(const uint8_t *pl, uint32_t len) {
@@ -522,4 +512,84 @@ void pager_on_alloc_commit(const uint8_t *pl, uint32_t len) {
     alloc_entry_t a; alloc_unwire(pl, &a);
     if (alloc_table_add(&a) != DSM_OK) LOG(LOG_WARN, "tabla de asignaciones llena (MAX_ALLOCS)");
     alloc_home_commit(a.alloc_id);
+}
+
+/* ---------- liberación (dsm_free y salida de un nodo) ----------
+ * El home recupera [first, first + num) de su slice: revoca la copia M del dueño (FETCH con
+ * invalidación, sin usar los datos), invalida las copias S, vuelve a ser el dueño, pone la página
+ * en cero y la marca libre. Puede esperar a la red: solo se llama desde un hilo de servicio, un
+ * hilo de la aplicación o un hilo propio, nunca desde el hilo de red. Devuelve las páginas liberadas. */
+uint32_t pager_reclaim(uint32_t first, uint32_t num) {
+    uint32_t freed = 0;
+    for (uint32_t p = first; p < first + num; p++) {
+        if (p == 0 || p < G.slice_first || p >= G.slice_first + G.slice_num) continue;   /* la raíz no se libera */
+        sem_wait(dlock(p));
+        dir_entry_t *d = &G.dir[p];
+        if (__atomic_load_n(&d->flags, __ATOMIC_ACQUIRE) & DF_ALLOCATED) {
+            if (d->owner != G.me && d->owner != NONE_OWNER && node_usable(d->owner)) fetch_from(p, d->owner, 1);
+            invalidate_set(p, d->copyset | (1ULL << G.me));
+            d->owner = G.me; d->copyset = 0; d->version++;
+            memset(sys_addr(p), 0, G.cfg.page_size);
+            local_set(p, PG_M);
+            pthread_mutex_lock(&G.alloc_mx);          /* el bit y el contador cambian juntos para home_reserve */
+            __atomic_fetch_and(&d->flags, (uint8_t)~DF_ALLOCATED, __ATOMIC_RELEASE);
+            G.slice_free++;
+            pthread_mutex_unlock(&G.alloc_mx);
+            freed++;
+        }
+        sem_post(dlock(p));
+    }
+    if (freed) pager_update_self_free();
+    return freed;
+}
+
+/* Quita una asignación de la tabla replicada. 1 si estaba. */
+int alloc_table_remove(uint64_t alloc_id) {
+    int found = 0;
+    pthread_rwlock_wrlock(&G.allocs_rw);
+    for (int i = 0; i < G.n_allocs; i++)
+        if (G.allocs[i].alloc_id == alloc_id) {
+            memmove(&G.allocs[i], &G.allocs[i + 1], (size_t)(G.n_allocs - i - 1) * sizeof G.allocs[0]);
+            G.n_allocs--; found = 1; break;
+        }
+    pthread_rwlock_unlock(&G.allocs_rw);
+    return found;
+}
+
+/* NODE_LEAVE: las asignaciones del nodo que sale se quitan de la tabla y, en un hilo aparte (el
+ * hilo de red no puede esperar), el home recupera las páginas que caen en su slice. */
+typedef struct { uint32_t first, num; } reclaim_rng_t;
+typedef struct { int n, node; reclaim_rng_t r[]; } reclaim_job_t;
+static _Atomic int reclaim_active;   /* dsm_finalize espera a que terminen antes de liberar las tablas */
+static void *reclaim_main(void *arg) {
+    reclaim_job_t *j = arg; uint32_t total = 0;
+    for (int i = 0; i < j->n; i++) total += pager_reclaim(j->r[i].first, j->r[i].num);
+    if (total) LOG(LOG_INFO, "%u páginas del nodo %d recuperadas", total, j->node);
+    free(j);
+    atomic_fetch_sub(&reclaim_active, 1);
+    return NULL;
+}
+void pager_wait_reclaim(void) {
+    for (int t = 0; t < 1000 && atomic_load(&reclaim_active) > 0; t++) usleep(10000);
+}
+void alloc_table_remove_node(uint16_t node) {
+    reclaim_job_t *j = malloc(sizeof *j + sizeof(reclaim_rng_t) * MAX_ALLOCS);
+    pthread_rwlock_wrlock(&G.allocs_rw);
+    int k = 0, n = 0;
+    uint32_t sf = G.slice_first, se = G.slice_first + G.slice_num;
+    for (int i = 0; i < G.n_allocs; i++) {
+        alloc_entry_t *a = &G.allocs[i];
+        if ((uint16_t)(a->alloc_id >> 48) != node) { G.allocs[k++] = *a; continue; }
+        uint32_t f = a->first_page > sf ? a->first_page : sf, e = a->first_page + a->num_pages < se ? a->first_page + a->num_pages : se;
+        if (j && e > f) j->r[n++] = (reclaim_rng_t){ f, e - f };
+    }
+    G.n_allocs = k;
+    pthread_rwlock_unlock(&G.allocs_rw);
+    if (!j) return;
+    if (!n) { free(j); return; }
+    j->n = n; j->node = node;
+    pthread_t th; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    atomic_fetch_add(&reclaim_active, 1);
+    if (pthread_create(&th, &at, reclaim_main, j)) { free(j); atomic_fetch_sub(&reclaim_active, 1); }
+    pthread_attr_destroy(&at);
 }

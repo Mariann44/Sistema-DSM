@@ -245,3 +245,62 @@ int alloc_distributed(size_t size, void **out) {
     free(nt);
     return rc;
 }
+
+/* ---------- dsm_free: FREE_REQUEST / FREE_REPLY / FREE_COMMIT ----------
+ * Solo el nodo que hizo la asignación puede liberarla, y ptr debe ser su inicio. El nodo pide a
+ * cada home involucrado (en orden ascendente) que recupere su tramo; el home revoca las copias,
+ * pone las páginas en cero y las vuelve a contar como libres. Al final, FREE_COMMIT quita la
+ * asignación de la tabla replicada en todos los nodos. Un acceso posterior a esa memoria es un
+ * error de la aplicación (uso después de liberar) y termina en un fallo fatal "pagina no asignada". */
+
+/* FREE_REQUEST (hilo de servicio: pager_reclaim espera a la red). */
+void alloc_serve_free(const msg_header_t *h, const uint8_t *pl, uint32_t len) {
+    int rc = DSM_OK;
+    if (len < FREE_REQ_LEN) rc = DSM_E_BAD_MSG;
+    else {
+        uint32_t first = get32(pl + 8), num = get32(pl + 12);
+        if (!num || first < G.slice_first || first + num > G.slice_first + G.slice_num) rc = DSM_E_INVAL;
+        else pager_reclaim(first, num);
+    }
+    send_msg_node(h->src_node, MSG_FREE_REPLY, 0, h->request_id, h->page_id, rc, NULL, 0, NULL, 0);
+}
+
+/* FREE_COMMIT (hoja). */
+void alloc_on_free_commit(const uint8_t *pl, uint32_t len) {
+    if (len >= FREE_COMMIT_LEN) alloc_table_remove(get64(pl));
+}
+
+int alloc_free(void *ptr) {
+    uintptr_t a = (uintptr_t)ptr, base = (uintptr_t)G.app;
+    if (a < base || a >= base + G.span || (a - base) % G.cfg.page_size) return DSM_E_INVAL;
+    uint32_t p = (uint32_t)((a - base) / G.cfg.page_size);
+    alloc_entry_t e;
+    if (p == 0 || !alloc_table_find(p, &e) || e.first_page != p) return DSM_E_INVAL;   /* la raíz no se libera */
+    if ((int)(e.alloc_id >> 48) != G.me) return DSM_E_PERM;
+    int rc = DSM_OK;
+    for (uint32_t q = e.first_page, end = e.first_page + e.num_pages; q < end;) {
+        int home = home_of(q);
+        uint32_t he = q, num;
+        while (he < end && home_of(he) == home) he++;
+        num = he - q;
+        if (home == G.me) pager_reclaim(q, num);
+        else {
+            uint8_t req[FREE_REQ_LEN]; put64(req, e.alloc_id); put32(req + 8, q); put32(req + 12, num);
+            waiter_t *w = waiter_get(W_FREE, home, q, NULL, 0, 1);
+            if (!w) { rc = DSM_E_NOMEM; break; }
+            int r = send_msg_node(home, MSG_FREE_REQUEST, 0, w->request_id, q, 0, req, sizeof req, NULL, 0);
+            /* El home puede tener que revocar muchas páginas: el plazo crece con el tramo. */
+            if (r == DSM_OK) r = waiter_wait(w, G.cfg.request_timeout_ms * G.cfg.max_retries + num);
+            if (r == DSM_OK) r = w->status;
+            waiter_put(w);
+            if (r != DSM_OK) { LOG(LOG_WARN, "dsm_free: el home %d no recuperó %u..%u (%s)", home, q, he - 1, dsm_strerror(r)); rc = r; }
+        }
+        q = he;
+    }
+    /* Aunque un home haya caído, la asignación deja de existir para el resto del clúster. */
+    alloc_table_remove(e.alloc_id);
+    uint8_t b[FREE_COMMIT_LEN]; put64(b, e.alloc_id);
+    pthread_mutex_lock(&G.nodes_mx); int nn = G.n_nodes; pthread_mutex_unlock(&G.nodes_mx);
+    for (int i = 0; i < nn; i++) if (i != G.me) send_msg_node(i, MSG_FREE_COMMIT, 0, 0, e.first_page, DSM_OK, b, sizeof b, NULL, 0);
+    return rc == DSM_E_NODE_DOWN ? DSM_OK : rc;
+}
