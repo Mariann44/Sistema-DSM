@@ -24,3 +24,6 @@ core
 .idea/
 .DS_Store
 Thumbs.db
+# Binarios de la aplicacion gemm
+apps/gemm/gemm_dsm
+apps/gemm/gemm_serial
