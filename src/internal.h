@@ -179,6 +179,7 @@ void alloc_table_remove_node(uint16_t node);
 void pager_on_alloc_commit(const uint8_t *pl, uint32_t len);
 void pager_serve_writeback(const msg_header_t *h, const uint8_t *pl, uint32_t len);
 void pager_writeback_all(void);
+uint64_t pager_flush(void);
 uint32_t pager_reclaim(uint32_t first, uint32_t num);
 void pager_wait_reclaim(void);
 int alloc_table_remove(uint64_t alloc_id);

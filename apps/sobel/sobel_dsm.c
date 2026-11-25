@@ -258,7 +258,8 @@ int main(int argc, char **argv) {
         printf("[nodo 0] RESULTADO: %s\n", ok ? "PASS" : "FALLO");
     }
     fflush(stdout);
-    barrier(me);                                   /* 3: nadie sale antes de que el nodo 0 termine */
+    dsm_flush();                                   /* las páginas en M vuelven a su home mientras todos siguen vivos */
+    barrier(me);                                   /* 3: nadie sale antes de que el nodo 0 termine y todos devolvieron sus páginas */
     dsm_finalize();
     return ok ? 0 : 1;
 }

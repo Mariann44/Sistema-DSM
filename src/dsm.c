@@ -39,6 +39,15 @@ int dsm_finalize(void) {
     return DSM_OK;
 }
 
+/* Devuelve a su home las páginas remotas que este nodo tiene en M. Las aplicaciones la llaman antes de su
+ * barrera final: así, cuando cualquier nodo llega a dsm_finalize y envía NODE_LEAVE, ya recibió todos los
+ * writeback de los demás y ninguno queda dirigido a un home que salió. */
+int dsm_flush(void) {
+    if (!G.inited) return DSM_E_NOT_INIT;
+    pager_flush();
+    return DSM_OK;
+}
+
 int dsm_alloc(size_t size, void **out) {
     if (!G.inited) return DSM_E_NOT_INIT;
     if (!out || !size) return DSM_E_INVAL;

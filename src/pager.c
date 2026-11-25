@@ -261,7 +261,7 @@ static int writeback_pages(const uint32_t *pg, int n) {
             if (rc == DSM_OK) rc = w->status;
             waiter_put(w);
             if (rc == DSM_OK) done += k;
-            else { lost += k; LOG(LOG_WARN, "writeback de %d páginas al nodo %d: %s", k, home, dsm_strerror(rc)); }
+            else { lost += k; LOG(LOG_DEBUG, "writeback de %d páginas al nodo %d: %s", k, home, dsm_strerror(rc)); }
         }
     }
     for (int i = 0; i < n; i++) {
@@ -302,8 +302,8 @@ static void cache_evict(void) {
     if (nwb) writeback_pages(wb, nwb);
 }
 
-/* dsm_finalize: todas las páginas remotas en M vuelven a su home antes de salir. */
-void pager_writeback_all(void) {
+/* dsm_flush / dsm_finalize: todas las páginas remotas en M vuelven a su home. Devuelve cuántas volvieron. */
+uint64_t pager_flush(void) {
     uint32_t wb[WB_BATCH]; int nwb = 0; uint64_t total = 0;
     for (uint32_t p = 0; p < G.max_pages; p++) {
         if (G.pages[p].state != PG_M) continue;
@@ -315,8 +315,14 @@ void pager_writeback_all(void) {
     }
     if (nwb) total += writeback_pages(wb, nwb);
     n_wb_finalize += total;
+    return total;
+}
+
+/* dsm_finalize: último writeback (normalmente vacío si la aplicación llamó a dsm_flush) y resumen de la caché. */
+void pager_writeback_all(void) {
+    pager_flush();
     LOG(LOG_INFO, "caché: %llu copias S descartadas, %llu páginas M devueltas por reemplazo, %llu devueltas al salir, %llu recibidas como home",
-        (unsigned long long)n_evict_s, (unsigned long long)n_evict_m, (unsigned long long)total, (unsigned long long)n_wb_received);
+        (unsigned long long)n_evict_s, (unsigned long long)n_evict_m, (unsigned long long)n_wb_finalize, (unsigned long long)n_wb_received);
 }
 
 /* PAGE_WRITEBACK en el home (hilo de servicio: toma dlock, que puede estar ocupado esperando red). */

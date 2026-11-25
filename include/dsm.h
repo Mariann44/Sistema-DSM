@@ -38,6 +38,7 @@ typedef struct {
 
 int dsm_init(const char *config_path);
 int dsm_finalize(void);
+int dsm_flush(void);   /* devuelve a su home las páginas remotas en M; llamar antes de la barrera final */
 int dsm_alloc(size_t size, void **out_ptr);
 int dsm_free(void *ptr);
 void *dsm_root(void);

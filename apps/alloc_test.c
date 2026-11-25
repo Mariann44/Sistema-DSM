@@ -172,6 +172,7 @@ int main(int argc, char **argv) {
            st.pages_allocated, (unsigned long long)st.read_faults, (unsigned long long)st.write_faults);
     printf("[nodo %d] %s\n", me, fails ? "RESULTADO: FALLO" : "RESULTADO: PASS");
     fflush(stdout);
+    dsm_flush();
     dsm_barrier(&r->bar, n);
     dsm_finalize();
     return fails ? 1 : 0;

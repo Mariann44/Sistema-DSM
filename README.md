@@ -199,6 +199,9 @@ Medidos con 3 nodos en una sola máquina virtual de 2 núcleos, con 2 hilos por 
   misma forma las páginas de las asignaciones de ese nodo.
 - **Writeback al salir:** `dsm_finalize` devuelve a su home todas las páginas remotas en M antes de
   avisar NODE_LEAVE, así que lo escrito por un nodo no se pierde cuando sale.
+- **`dsm_flush`:** hace ese mismo writeback sin salir del clúster. Las aplicaciones lo llaman antes
+  de su barrera final: si todos llegaran a `dsm_finalize` a la vez, un home podría enviar
+  NODE_LEAVE antes de recibir los writeback de los demás y esas páginas no se podrían devolver.
 - **Heartbeat:** cada nodo envía un HEARTBEAT por segundo al `HB_PORT` de cada vecino, por una
   conexión aparte y con su propio hilo.
   - Sin latidos por `SUSPECT_AFTER_MS`, el vecino pasa a SUSPECT, y vuelve a ALIVE si late de nuevo.
